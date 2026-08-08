@@ -40,6 +40,14 @@ type Repository = {
 }
 type TreeEntry = { name: string; path: string; type: string }
 type Blob = { path: string; content: string; isText: boolean }
+type GitRef = { name: string; hash: string }
+type Commit = { hash: string; subject: string; author: string; date: string }
+type RepositorySettings = {
+  description: string
+  visibility: "public" | "private"
+  defaultBranch: string
+  topics: string[]
+}
 type CaptchaConfig = { enabled: boolean; siteKey: string }
 declare global {
   interface Window {
@@ -613,7 +621,15 @@ function RepositoryView({
   onBack: () => void
 }) {
   const [tab, setTab] = useState<
-    "code" | "issues" | "pulls" | "releases" | "contributors"
+    | "code"
+    | "commits"
+    | "branches"
+    | "tags"
+    | "issues"
+    | "pulls"
+    | "releases"
+    | "contributors"
+    | "settings"
   >("code")
   const [issues, setIssues] = useState<Issue[]>([])
   const [pulls, setPulls] = useState<PullRequest[]>([])
@@ -685,10 +701,14 @@ function RepositoryView({
   }
   const tabs = [
     ["code", "Code", <FolderGit2 />],
+    ["commits", "提交", <GitBranch />],
+    ["branches", "分支", <GitBranch />],
+    ["tags", "标签", <Tag />],
     ["issues", "Issues", <Megaphone />],
     ["pulls", "Pull requests", <GitPullRequest />],
     ["releases", "Releases", <Tag />],
     ["contributors", "Contributors", <Users />],
+    ["settings", "设置", <Settings />],
   ] as const
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
@@ -731,6 +751,9 @@ function RepositoryView({
       )}
       <section className="mt-6">
         {tab === "code" && <CodeBrowser name={name} />}
+        {tab === "commits" && <RepositoryList name={name} kind="commits" />}
+        {tab === "branches" && <RepositoryList name={name} kind="branches" />}
+        {tab === "tags" && <RepositoryList name={name} kind="tags" />}
         {tab === "issues" && (
           <WorkList
             title="Issues"
@@ -828,6 +851,7 @@ function RepositoryView({
             )}
           </div>
         )}
+        {tab === "settings" && <RepositorySettingsPanel name={name} />}
       </section>
     </div>
   )
@@ -944,6 +968,157 @@ function CodeBrowser({ name }: { name: string }) {
         )}
       </div>
     </div>
+  )
+}
+
+function RepositoryList({
+  name,
+  kind,
+}: {
+  name: string
+  kind: "commits" | "branches" | "tags"
+}) {
+  const [items, setItems] = useState<(Commit | GitRef)[]>([])
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    void api<(Commit | GitRef)[]>(`/api/repos/${name}/${kind}`)
+      .then(setItems)
+      .catch((cause: unknown) =>
+        setMessage(cause instanceof Error ? cause.message : "加载失败")
+      )
+  }, [name, kind])
+  const title =
+    kind === "commits" ? "提交记录" : kind === "branches" ? "分支" : "标签"
+  return (
+    <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="border-b border-zinc-100 px-5 py-4 dark:border-zinc-800">
+        <h2 className="font-semibold">{title}</h2>
+      </div>
+      {message && <p className="p-4 text-sm text-red-600">{message}</p>}
+      {items.length ? (
+        items.map((item) =>
+          "subject" in item ? (
+            <div
+              key={item.hash}
+              className="border-b border-zinc-100 px-5 py-4 last:border-0 dark:border-zinc-800"
+            >
+              <p className="font-medium">{item.subject}</p>
+              <p className="mt-1 text-sm text-zinc-500">
+                {item.author} · {when(item.date)} · <code>{item.hash}</code>
+              </p>
+            </div>
+          ) : (
+            <div
+              key={item.name}
+              className="flex items-center justify-between border-b border-zinc-100 px-5 py-4 last:border-0 dark:border-zinc-800"
+            >
+              <span className="font-medium">{item.name}</span>
+              <code className="text-xs text-zinc-500">{item.hash}</code>
+            </div>
+          )
+        )
+      ) : (
+        <Empty
+          icon={<GitBranch />}
+          title={`暂无${title}`}
+          text="推送提交后将在此显示。"
+        />
+      )}
+    </div>
+  )
+}
+
+function RepositorySettingsPanel({ name }: { name: string }) {
+  const [value, setValue] = useState<RepositorySettings>({
+    description: "",
+    visibility: "private",
+    defaultBranch: "main",
+    topics: [],
+  })
+  const [topics, setTopics] = useState("")
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    void api<RepositorySettings>(`/api/repos/${name}/settings`)
+      .then((settings) => {
+        setValue(settings)
+        setTopics(settings.topics.join(", "))
+      })
+      .catch((cause: unknown) =>
+        setMessage(cause instanceof Error ? cause.message : "加载失败")
+      )
+  }, [name])
+  const save = async (event: FormEvent) => {
+    event.preventDefault()
+    try {
+      const next = {
+        ...value,
+        topics: topics
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      }
+      setValue(
+        await api<RepositorySettings>(`/api/repos/${name}/settings`, {
+          method: "PATCH",
+          body: JSON.stringify(next),
+        })
+      )
+      setMessage("仓库设置已保存。")
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "保存失败")
+    }
+  }
+  return (
+    <form
+      onSubmit={save}
+      className="max-w-2xl space-y-5 rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"
+    >
+      <div>
+        <h2 className="text-lg font-semibold">仓库设置</h2>
+        <p className="mt-1 text-sm text-zinc-500">
+          管理仓库简介、可见性、默认分支和 Topics。
+        </p>
+      </div>
+      <Field
+        label="仓库简介"
+        value={value.description}
+        onChange={(description) => setValue({ ...value, description })}
+        placeholder="描述这个项目"
+      />
+      <Field
+        label="默认分支"
+        value={value.defaultBranch}
+        onChange={(defaultBranch) => setValue({ ...value, defaultBranch })}
+        placeholder="main"
+      />
+      <Field
+        label="Topics（逗号分隔）"
+        value={topics}
+        onChange={setTopics}
+        placeholder="go, git, forge"
+      />
+      <label className="block text-sm font-medium">
+        可见性
+        <select
+          value={value.visibility}
+          onChange={(event) =>
+            setValue({
+              ...value,
+              visibility: event.target.value as "public" | "private",
+            })
+          }
+          className="mt-1.5 block h-10 w-full rounded-xl border border-zinc-200 bg-transparent px-3 dark:border-zinc-700"
+        >
+          <option value="private">私有</option>
+          <option value="public">公开</option>
+        </select>
+      </label>
+      {message && <p className="text-sm text-emerald-700">{message}</p>}
+      <Button type="submit">
+        <Settings />
+        保存仓库设置
+      </Button>
+    </form>
   )
 }
 
