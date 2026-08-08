@@ -26,7 +26,12 @@ type SiteSettings = {
   description: string
   allowRegistration: boolean
 }
-type Repository = { scope: string; name: string; fullName: string; updatedAt: string }
+type Repository = {
+  scope: string
+  name: string
+  fullName: string
+  updatedAt: string
+}
 type TreeEntry = { name: string; path: string; type: string }
 type Blob = { path: string; content: string; isText: boolean }
 type Issue = {
@@ -131,7 +136,10 @@ export default function App() {
     window.history.pushState({}, "", `/${fullName}`)
     setSelected(fullName)
   }
-  const closeRepo = () => { window.history.pushState({}, "", "/"); setSelected(null) }
+  const closeRepo = () => {
+    window.history.pushState({}, "", "/")
+    setSelected(null)
+  }
 
   if (needsSetup)
     return (
@@ -211,11 +219,7 @@ export default function App() {
       {panel === "settings" && user?.isAdmin ? (
         <AdminSettings site={site} onSaved={setSite} />
       ) : selected ? (
-        <RepositoryView
-          name={selected}
-          user={user}
-          onBack={closeRepo}
-        />
+        <RepositoryView name={selected} user={user} onBack={closeRepo} />
       ) : (
         <Dashboard
           site={site}
@@ -417,7 +421,7 @@ function Dashboard({
   onRepos: (repos: Repository[]) => void
   onOpen: (name: string) => void
 }) {
-	const [scope, setScope] = useState(user?.username ?? "")
+  const [scope, setScope] = useState(user?.username ?? "")
   const [name, setName] = useState("")
   const [message, setMessage] = useState("")
   const [copied, setCopied] = useState("")
@@ -430,7 +434,7 @@ function Dashboard({
       })
       onRepos([repo, ...repos])
       setName("")
-	  onOpen(repo.fullName)
+      onOpen(repo.fullName)
     } catch (cause) {
       setMessage(
         cause instanceof Error ? cause.message : "Could not create repository."
@@ -477,7 +481,7 @@ function Dashboard({
                   </span>
                   <span className="min-w-0 flex-1">
                     <strong className="block truncate text-sm">
-							{repo.fullName}
+                      {repo.fullName}
                     </strong>
                     <small className="text-zinc-500">
                       Updated {when(repo.updatedAt)}
@@ -487,9 +491,9 @@ function Dashboard({
                     variant="ghost"
                     size="sm"
                     onPress={() => {
-							const command = `git clone ${window.location.origin}/git/${repo.fullName}`
+                      const command = `git clone ${window.location.origin}/git/${repo.fullName}`
                       void navigator.clipboard.writeText(command)
-							setCopied(repo.fullName)
+                      setCopied(repo.fullName)
                     }}
                   >
                     {copied === repo.fullName ? <Check /> : <Copy />}
@@ -513,7 +517,12 @@ function Dashboard({
           <h2 className="font-semibold">Create repository</h2>
           {user ? (
             <form className="mt-4 space-y-3" onSubmit={create}>
-			  <Field label="Scope / owner" value={scope} onChange={setScope} placeholder={user.username} />
+              <Field
+                label="Scope / owner"
+                value={scope}
+                onChange={setScope}
+                placeholder={user.username}
+              />
               <Field
                 label="Repository name"
                 value={name}
@@ -593,6 +602,31 @@ function RepositoryView({
       )
     }
   }
+  const remove = async (target: string, id: number) => {
+    try {
+      await api<void>(`/api/repos/${name}/${target}/${id}`, {
+        method: "DELETE",
+      })
+      await load()
+    } catch (cause) {
+      setMessage(
+        cause instanceof Error ? cause.message : "Could not delete item."
+      )
+    }
+  }
+  const changeState = async (target: string, id: number, state: string) => {
+    try {
+      await api<void>(`/api/repos/${name}/${target}/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ state }),
+      })
+      await load()
+    } catch (cause) {
+      setMessage(
+        cause instanceof Error ? cause.message : "Could not update item."
+      )
+    }
+  }
   const tabs = [
     ["code", "Code", <FolderGit2 />],
     ["issues", "Issues", <Megaphone />],
@@ -649,6 +683,8 @@ function RepositoryView({
             fields={["title", "body"]}
             button="New issue"
             onSubmit={(v) => add("issue", v)}
+            onDelete={(id) => remove("issues", id)}
+            onStateChange={(id, state) => changeState("issues", id, state)}
             render={(item) => (
               <>
                 <Badge state={item.state} />
@@ -670,6 +706,8 @@ function RepositoryView({
             fields={["title", "sourceBranch", "targetBranch", "body"]}
             button="New pull request"
             onSubmit={(v) => add("pull", v)}
+            onDelete={(id) => remove("pulls", id)}
+            onStateChange={(id, state) => changeState("pulls", id, state)}
             render={(item) => (
               <>
                 <Badge state={item.state} />
@@ -691,6 +729,7 @@ function RepositoryView({
             fields={["tagName", "title", "notes"]}
             button="Publish release"
             onSubmit={(v) => add("release", v)}
+            onDelete={(id) => remove("releases", id)}
             render={(item) => (
               <>
                 <Tag className="inline size-3.5 text-emerald-600" />
@@ -744,16 +783,112 @@ function CodeBrowser({ name }: { name: string }) {
   const [file, setFile] = useState<Blob | null>(null)
   const [message, setMessage] = useState("")
   useEffect(() => {
-    void api<TreeEntry[]>(`/api/repos/${name}/tree?path=${encodeURIComponent(directory)}`)
-      .then((items) => { setEntries(items); setFile(null) })
-      .catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not read repository tree."))
+    void api<TreeEntry[]>(
+      `/api/repos/${name}/tree?path=${encodeURIComponent(directory)}`
+    )
+      .then((items) => {
+        setEntries(items)
+        setFile(null)
+      })
+      .catch((cause: unknown) =>
+        setMessage(
+          cause instanceof Error
+            ? cause.message
+            : "Could not read repository tree."
+        )
+      )
   }, [name, directory])
   const openEntry = async (entry: TreeEntry) => {
-    if (entry.type === "tree") { setDirectory(entry.path); return }
-    try { setFile(await api<Blob>(`/api/repos/${name}/blob?path=${encodeURIComponent(entry.path)}`)) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not read file.") }
+    if (entry.type === "tree") {
+      setDirectory(entry.path)
+      return
+    }
+    try {
+      setFile(
+        await api<Blob>(
+          `/api/repos/${name}/blob?path=${encodeURIComponent(entry.path)}`
+        )
+      )
+    } catch (cause) {
+      setMessage(
+        cause instanceof Error ? cause.message : "Could not read file."
+      )
+    }
   }
   const crumbs = directory ? directory.split("/") : []
-  return <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]"><div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><div className="flex items-center gap-1 border-b border-zinc-100 px-4 py-3 text-sm dark:border-zinc-800"><button className="text-emerald-700 hover:underline dark:text-emerald-300" onClick={() => setDirectory("")}>{name}</button>{crumbs.map((crumb, index) => <span key={`${crumb}-${index}`}><span className="mx-1 text-zinc-300">/</span><button onClick={() => setDirectory(crumbs.slice(0, index + 1).join("/"))} className="hover:underline">{crumb}</button></span>)}</div>{message && <p className="px-4 pt-3 text-sm text-red-600">{message}</p>}{entries.length ? entries.map((entry) => <button key={entry.path} onClick={() => void openEntry(entry)} className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"><FolderGit2 className={`size-4 ${entry.type === "tree" ? "text-amber-500" : "text-zinc-400"}`} /><span>{entry.name}</span><small className="ml-auto text-zinc-400">{entry.type === "tree" ? "directory" : "file"}</small></button>) : <Empty icon={<FolderGit2 />} title="No files on the default branch" text="Push a commit to browse its source code here." />}</div><div className="overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-950 text-zinc-100 dark:border-zinc-800">{file ? <><div className="border-b border-white/10 px-4 py-3 text-sm text-zinc-300">{file.path}</div>{file.isText ? <pre className="max-h-[32rem] overflow-auto p-4 text-xs leading-6"><code>{file.content}</code></pre> : <p className="p-5 text-sm text-zinc-400">Binary file preview is unavailable.</p>}</> : <div className="grid min-h-64 place-items-center p-6 text-center text-sm text-zinc-400">Select a file to preview its source code.</div>}</div></div>
+  return (
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex items-center gap-1 border-b border-zinc-100 px-4 py-3 text-sm dark:border-zinc-800">
+          <button
+            className="text-emerald-700 hover:underline dark:text-emerald-300"
+            onClick={() => setDirectory("")}
+          >
+            {name}
+          </button>
+          {crumbs.map((crumb, index) => (
+            <span key={`${crumb}-${index}`}>
+              <span className="mx-1 text-zinc-300">/</span>
+              <button
+                onClick={() =>
+                  setDirectory(crumbs.slice(0, index + 1).join("/"))
+                }
+                className="hover:underline"
+              >
+                {crumb}
+              </button>
+            </span>
+          ))}
+        </div>
+        {message && <p className="px-4 pt-3 text-sm text-red-600">{message}</p>}
+        {entries.length ? (
+          entries.map((entry) => (
+            <button
+              key={entry.path}
+              onClick={() => void openEntry(entry)}
+              className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
+            >
+              <FolderGit2
+                className={`size-4 ${entry.type === "tree" ? "text-amber-500" : "text-zinc-400"}`}
+              />
+              <span>{entry.name}</span>
+              <small className="ml-auto text-zinc-400">
+                {entry.type === "tree" ? "directory" : "file"}
+              </small>
+            </button>
+          ))
+        ) : (
+          <Empty
+            icon={<FolderGit2 />}
+            title="No files on the default branch"
+            text="Push a commit to browse its source code here."
+          />
+        )}
+      </div>
+      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-950 text-zinc-100 dark:border-zinc-800">
+        {file ? (
+          <>
+            <div className="border-b border-white/10 px-4 py-3 text-sm text-zinc-300">
+              {file.path}
+            </div>
+            {file.isText ? (
+              <pre className="max-h-[32rem] overflow-auto p-4 text-xs leading-6">
+                <code>{file.content}</code>
+              </pre>
+            ) : (
+              <p className="p-5 text-sm text-zinc-400">
+                Binary file preview is unavailable.
+              </p>
+            )}
+          </>
+        ) : (
+          <div className="grid min-h-64 place-items-center p-6 text-center text-sm text-zinc-400">
+            Select a file to preview its source code.
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function WorkList<T extends { id: number }>({
@@ -763,6 +898,8 @@ function WorkList<T extends { id: number }>({
   fields,
   button,
   onSubmit,
+  onDelete,
+  onStateChange,
   render,
 }: {
   title: string
@@ -771,10 +908,15 @@ function WorkList<T extends { id: number }>({
   fields: string[]
   button: string
   onSubmit: (value: Record<string, string>) => void
+  onDelete?: (id: number) => void
+  onStateChange?: (id: number, state: string) => void
   render: (item: T) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [deleting, setDeleting] = useState<number | null>(null)
+  const [editing, setEditing] = useState<number | null>(null)
+  const [state, setState] = useState("open")
   return (
     <>
       <div className="mb-4 flex items-center justify-between">
@@ -788,49 +930,49 @@ function WorkList<T extends { id: number }>({
       </div>
       {open && (
         <Modal title={button} onClose={() => setOpen(false)}>
-        <form
-          className="grid gap-3"
-          onSubmit={(e) => {
-            e.preventDefault()
-            onSubmit(values)
-            setValues({})
-            setOpen(false)
-          }}
-        >
-          {fields.map((field) => (
-            <label key={field} className="text-sm font-medium">
-              {field === "sourceBranch"
-                ? "Source branch"
-                : field === "targetBranch"
-                  ? "Target branch"
-                  : field === "tagName"
-                    ? "Tag"
-                    : field[0].toUpperCase() + field.slice(1)}
-              {field === "body" || field === "notes" ? (
-                <textarea
-                  required={field === "body"}
-                  value={values[field] || ""}
-                  onChange={(e) =>
-                    setValues({ ...values, [field]: e.target.value })
-                  }
-                  className="mt-1 block min-h-20 w-full rounded-xl border border-zinc-200 bg-transparent p-2 text-sm dark:border-zinc-700"
-                />
-              ) : (
-                <input
-                  required={field !== "body"}
-                  value={values[field] || ""}
-                  onChange={(e) =>
-                    setValues({ ...values, [field]: e.target.value })
-                  }
-                  className="mt-1 block h-9 w-full rounded-xl border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700"
-                />
-              )}
-            </label>
-          ))}
-          <Button type="submit" className="w-fit">
-            Save
-          </Button>
-        </form>
+          <form
+            className="grid gap-3"
+            onSubmit={(e) => {
+              e.preventDefault()
+              onSubmit(values)
+              setValues({})
+              setOpen(false)
+            }}
+          >
+            {fields.map((field) => (
+              <label key={field} className="text-sm font-medium">
+                {field === "sourceBranch"
+                  ? "Source branch"
+                  : field === "targetBranch"
+                    ? "Target branch"
+                    : field === "tagName"
+                      ? "Tag"
+                      : field[0].toUpperCase() + field.slice(1)}
+                {field === "body" || field === "notes" ? (
+                  <textarea
+                    required={field === "body"}
+                    value={values[field] || ""}
+                    onChange={(e) =>
+                      setValues({ ...values, [field]: e.target.value })
+                    }
+                    className="mt-1 block min-h-20 w-full rounded-xl border border-zinc-200 bg-transparent p-2 text-sm dark:border-zinc-700"
+                  />
+                ) : (
+                  <input
+                    required={field !== "body"}
+                    value={values[field] || ""}
+                    onChange={(e) =>
+                      setValues({ ...values, [field]: e.target.value })
+                    }
+                    className="mt-1 block h-9 w-full rounded-xl border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700"
+                  />
+                )}
+              </label>
+            ))}
+            <Button type="submit" className="w-fit">
+              Save
+            </Button>
+          </form>
         </Modal>
       )}
       <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
@@ -841,6 +983,33 @@ function WorkList<T extends { id: number }>({
               className="border-b border-zinc-100 px-5 py-4 last:border-0 dark:border-zinc-800"
             >
               {render(item)}
+              {user && (onDelete || onStateChange) && (
+                <div className="mt-3 flex gap-2">
+                  {onStateChange && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onPress={() => {
+                        setEditing(item.id)
+                        setState(
+                          (item as T & { state?: string }).state || "open"
+                        )
+                      }}
+                    >
+                      Edit status
+                    </Button>
+                  )}
+                  {onDelete && (
+                    <Button
+                      variant="destructive"
+                      size="xs"
+                      onPress={() => setDeleting(item.id)}
+                    >
+                      Delete
+                    </Button>
+                  )}
+                </div>
+              )}
             </article>
           ))
         ) : (
@@ -855,12 +1024,87 @@ function WorkList<T extends { id: number }>({
           />
         )}
       </div>
+      {editing !== null && (
+        <Modal title="Edit status" onClose={() => setEditing(null)}>
+          <div className="space-y-4">
+            <label className="block text-sm font-medium">
+              Status
+              <select
+                value={state}
+                onChange={(event) => setState(event.target.value)}
+                className="mt-1 block h-10 w-full rounded-xl border border-zinc-200 bg-transparent px-3 dark:border-zinc-700"
+              >
+                <option value="open">Open</option>
+                <option value="closed">Closed</option>
+                <option value="merged">Merged</option>
+              </select>
+            </label>
+            <Button
+              onPress={() => {
+                onStateChange?.(editing, state)
+                setEditing(null)
+              }}
+            >
+              Save changes
+            </Button>
+          </div>
+        </Modal>
+      )}
+      {deleting !== null && (
+        <Modal
+          title={`Delete ${title.slice(0, -1)}`}
+          onClose={() => setDeleting(null)}
+        >
+          <p className="text-sm text-zinc-500">
+            This action permanently removes the item.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="outline" onPress={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onPress={() => {
+                onDelete?.(deleting)
+                setDeleting(null)
+              }}
+            >
+              Delete
+            </Button>
+          </div>
+        </Modal>
+      )}
     </>
   )
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  return <div className="fixed inset-0 z-30 grid place-items-center bg-zinc-950/45 p-5" role="dialog" aria-modal="true" aria-label={title}><div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl dark:bg-zinc-900"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">{title}</h2><button onClick={onClose} aria-label="Close dialog"><X className="size-4 text-zinc-500" /></button></div>{children}</div></div>
+function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-30 grid place-items-center bg-zinc-950/45 p-5"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl dark:bg-zinc-900">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="font-semibold">{title}</h2>
+          <button onClick={onClose} aria-label="Close dialog">
+            <X className="size-4 text-zinc-500" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
 }
 
 function AdminSettings({

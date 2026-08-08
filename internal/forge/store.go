@@ -262,6 +262,10 @@ func (s *Store) UpdateIssueState(ctx context.Context, repo string, id int64, sta
 	return nil
 }
 
+func (s *Store) DeleteIssue(ctx context.Context, repo string, id int64) error {
+	return s.deleteItem(ctx, "issues", repo, id)
+}
+
 func (s *Store) ListPullRequests(ctx context.Context, repo string) ([]PullRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT p.id,p.title,p.body,p.source_branch,p.target_branch,p.state,u.username,p.created_at,p.updated_at FROM pull_requests p JOIN users u ON u.id=p.author_id WHERE p.repository_name=`+s.arg(1)+` ORDER BY p.updated_at DESC`, repo)
 	if err != nil {
@@ -306,6 +310,10 @@ func (s *Store) UpdatePullRequestState(ctx context.Context, repo string, id int6
 	return nil
 }
 
+func (s *Store) DeletePullRequest(ctx context.Context, repo string, id int64) error {
+	return s.deleteItem(ctx, "pull_requests", repo, id)
+}
+
 func (s *Store) ListReleases(ctx context.Context, repo string) ([]Release, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.tag_name,r.title,r.notes,u.username,r.created_at FROM releases r JOIN users u ON u.id=r.author_id WHERE r.repository_name=`+s.arg(1)+` ORDER BY r.created_at DESC`, repo)
 	if err != nil {
@@ -334,6 +342,22 @@ func (s *Store) CreateRelease(ctx context.Context, repo string, user User, tag, 
 	}
 	_ = s.activity(ctx, repo, user.ID, "release")
 	return Release{ID: id, TagName: strings.TrimSpace(tag), Title: strings.TrimSpace(title), Notes: strings.TrimSpace(notes), Author: user.Username, CreatedAt: now}, nil
+}
+
+func (s *Store) DeleteRelease(ctx context.Context, repo string, id int64) error {
+	return s.deleteItem(ctx, "releases", repo, id)
+}
+
+func (s *Store) deleteItem(ctx context.Context, table, repo string, id int64) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE id="+s.arg(1)+" AND repository_name="+s.arg(2), id, repo)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 func (s *Store) Contributors(ctx context.Context, repo string) ([]Contributor, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT u.username,COUNT(*) FROM activities a JOIN users u ON u.id=a.user_id WHERE a.repository_name=`+s.arg(1)+` GROUP BY u.id,u.username ORDER BY COUNT(*) DESC,u.username`, repo)

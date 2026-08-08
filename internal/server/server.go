@@ -56,11 +56,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/issues/{id}", s.updateIssue)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/issues/{id}", s.deleteIssue)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls", s.listPullRequests)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls", s.createPullRequest)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/pulls/{id}", s.updatePullRequest)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/pulls/{id}", s.deletePullRequest)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/releases", s.listReleases)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/releases", s.createRelease)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/releases/{id}", s.deleteRelease)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/contributors", s.contributors)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}", s.getRepo)
 	mux.HandleFunc("/git/{scope}/{name}/{rest...}", s.gitHTTP)
@@ -290,6 +293,25 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+func (s *Server) deleteIssue(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeleteIssue(r.Context(), repoKey(r), id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Issue not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not delete issue.")
+	} else {
+		w.WriteHeader(204)
+	}
+}
 func (s *Server) listPullRequests(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
@@ -353,6 +375,25 @@ func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+func (s *Server) deletePullRequest(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeletePullRequest(r.Context(), repoKey(r), id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not delete pull request.")
+	} else {
+		w.WriteHeader(204)
+	}
+}
 func (s *Server) listReleases(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
@@ -386,6 +427,25 @@ func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, item)
+}
+func (s *Server) deleteRelease(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeleteRelease(r.Context(), repoKey(r), id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Release not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not delete release.")
+	} else {
+		w.WriteHeader(204)
+	}
 }
 func (s *Server) contributors(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
