@@ -9,15 +9,21 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 
 	"kohame/internal/config"
 	"kohame/internal/database"
+	"kohame/internal/forge"
 	"kohame/internal/repository"
 	"kohame/internal/web"
 )
 
-type Server struct{ repos *repository.Store }
+type Server struct {
+	repos *repository.Store
+	forge *forge.Store
+}
 
 func New(cfg config.Config) (*Server, error) {
 	if err := os.MkdirAll(cfg.Storage.RepositoryRoot, 0o755); err != nil {
@@ -27,15 +33,33 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver)}, nil
+	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forge.NewStore(db, cfg.Database.Driver)}, nil
 }
 
 func (s *Server) Close() error { return s.repos.Close() }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/setup/status", s.setupStatus)
+	mux.HandleFunc("POST /api/setup/admin", s.createAdmin)
+	mux.HandleFunc("GET /api/settings", s.settings)
+	mux.HandleFunc("GET /api/admin/settings", s.adminSettings)
+	mux.HandleFunc("PATCH /api/admin/settings", s.updateSettings)
+	mux.HandleFunc("POST /api/auth/register", s.register)
+	mux.HandleFunc("POST /api/auth/login", s.login)
+	mux.HandleFunc("POST /api/auth/logout", s.logout)
+	mux.HandleFunc("GET /api/auth/me", s.me)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
+	mux.HandleFunc("GET /api/repos/{name}/issues", s.listIssues)
+	mux.HandleFunc("POST /api/repos/{name}/issues", s.createIssue)
+	mux.HandleFunc("PATCH /api/repos/{name}/issues/{id}", s.updateIssue)
+	mux.HandleFunc("GET /api/repos/{name}/pulls", s.listPullRequests)
+	mux.HandleFunc("POST /api/repos/{name}/pulls", s.createPullRequest)
+	mux.HandleFunc("PATCH /api/repos/{name}/pulls/{id}", s.updatePullRequest)
+	mux.HandleFunc("GET /api/repos/{name}/releases", s.listReleases)
+	mux.HandleFunc("POST /api/repos/{name}/releases", s.createRelease)
+	mux.HandleFunc("GET /api/repos/{name}/contributors", s.contributors)
 	mux.HandleFunc("GET /api/repos/{name}", s.getRepo)
 	mux.HandleFunc("/git/{name}/{rest...}", s.gitHTTP)
 	mux.Handle("/", spa())
@@ -65,6 +89,9 @@ func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
 	var input struct {
 		Name string `json:"name"`
 	}
@@ -85,8 +112,372 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
+	needsSetup, err := s.forge.NeedsSetup(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not read setup status.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"needsSetup": needsSetup})
+}
+
+func (s *Server) createAdmin(w http.ResponseWriter, r *http.Request) {
+	var input credentials
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	user, err := s.forge.CreateAdmin(r.Context(), input.Username, input.Email, input.Password)
+	if errors.Is(err, forge.ErrSetupComplete) {
+		writeError(w, http.StatusConflict, "Setup is already complete.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.startSession(w, r, user)
+	writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	var input credentials
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	user, err := s.forge.Register(r.Context(), input.Username, input.Email, input.Password)
+	switch {
+	case errors.Is(err, forge.ErrForbidden):
+		writeError(w, http.StatusForbidden, "Registration is disabled by the site administrator.")
+	case errors.Is(err, forge.ErrSetupComplete):
+		writeError(w, http.StatusConflict, "Create the first administrator before registering users.")
+	case errors.Is(err, forge.ErrConflict):
+		writeError(w, http.StatusConflict, "That username or email is already in use.")
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		s.startSession(w, r, user)
+		writeJSON(w, http.StatusCreated, user)
+	}
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Identity string `json:"identity"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	user, err := s.forge.Authenticate(r.Context(), input.Identity, input.Password)
+	if errors.Is(err, forge.ErrUnauthorized) {
+		writeError(w, http.StatusUnauthorized, "Invalid username, email, or password.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not sign in.")
+		return
+	}
+	s.startSession(w, r, user)
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("kohame_session"); err == nil {
+		_ = s.forge.DeleteSession(r.Context(), cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: "kohame_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if ok {
+		writeJSON(w, http.StatusOK, user)
+	}
+}
+func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
+	value, err := s.forge.Settings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load site settings.")
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	_ = user
+	s.settings(w, r)
+}
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var input forge.SiteSettings
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.forge.UpdateSettings(r.Context(), input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, input)
+}
+
+func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.ListIssues(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load issues.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreateIssue(r.Context(), r.PathValue("name"), user, input.Title, input.Body)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		State string `json:"state"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	err := s.forge.UpdateIssueState(r.Context(), r.PathValue("name"), id, input.State)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Issue not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) listPullRequests(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.ListPullRequests(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load pull requests.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createPullRequest(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Title        string `json:"title"`
+		Body         string `json:"body"`
+		SourceBranch string `json:"sourceBranch"`
+		TargetBranch string `json:"targetBranch"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreatePullRequest(r.Context(), r.PathValue("name"), user, input.Title, input.Body, input.SourceBranch, input.TargetBranch)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		State string `json:"state"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	err := s.forge.UpdatePullRequestState(r.Context(), r.PathValue("name"), id, input.State)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) listReleases(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.ListReleases(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load releases.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		TagName string `json:"tagName"`
+		Title   string `json:"title"`
+		Notes   string `json:"notes"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreateRelease(r.Context(), r.PathValue("name"), user, input.TagName, input.Title, input.Notes)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) contributors(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.Contributors(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load contributors.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+type credentials struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(target); err != nil {
+		writeError(w, 400, "Invalid request body.")
+		return false
+	}
+	return true
+}
+func (s *Server) hasRepo(w http.ResponseWriter, r *http.Request) bool {
+	if _, err := s.repos.Get(r.PathValue("name")); err != nil {
+		writeError(w, 404, "Repository not found.")
+		return false
+	}
+	return true
+}
+func (s *Server) currentUser(r *http.Request) (forge.User, error) {
+	cookie, err := r.Cookie("kohame_session")
+	if err != nil {
+		return forge.User{}, forge.ErrUnauthorized
+	}
+	return s.forge.UserBySession(r.Context(), cookie.Value)
+}
+
+func (s *Server) gitUser(r *http.Request) (forge.User, error) {
+	if user, err := s.currentUser(r); err == nil {
+		return user, nil
+	}
+	username, password, ok := r.BasicAuth()
+	if !ok {
+		return forge.User{}, forge.ErrUnauthorized
+	}
+	return s.forge.Authenticate(r.Context(), username, password)
+}
+func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (forge.User, bool) {
+	user, err := s.currentUser(r)
+	if errors.Is(err, forge.ErrUnauthorized) {
+		writeError(w, 401, "Sign in to continue.")
+		return forge.User{}, false
+	}
+	if err != nil {
+		writeError(w, 500, "Could not verify session.")
+		return forge.User{}, false
+	}
+	return user, true
+}
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (forge.User, bool) {
+	user, ok := s.requireUser(w, r)
+	if ok && !user.IsAdmin {
+		writeError(w, 403, "Administrator access is required.")
+		return forge.User{}, false
+	}
+	return user, ok
+}
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user forge.User) {
+	token, err := s.forge.CreateSession(r.Context(), user.ID)
+	if err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "kohame_session", Value: token, Path: "/", Expires: time.Now().Add(30 * 24 * time.Hour), HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+}
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, 400, "Invalid item ID.")
+		return 0, false
+	}
+	return id, true
+}
+
 // gitHTTP delegates Git smart-HTTP protocol framing to the installed git executable.
 func (s *Server) gitHTTP(w http.ResponseWriter, r *http.Request) {
+	user, err := s.gitUser(r)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Kohame Git"`)
+		writeError(w, http.StatusUnauthorized, "Sign in with your Kohame username and password to use Git HTTP.")
+		return
+	}
 	name := r.PathValue("name")
 	if _, err := s.repos.Get(name); err != nil {
 		http.NotFound(w, r)
@@ -106,7 +497,7 @@ func (s *Server) gitHTTP(w http.ResponseWriter, r *http.Request) {
 		"QUERY_STRING="+r.URL.RawQuery,
 		"CONTENT_TYPE="+r.Header.Get("Content-Type"),
 		"CONTENT_LENGTH="+r.Header.Get("Content-Length"),
-		"REMOTE_USER=kohame",
+		"REMOTE_USER="+user.Username,
 	)
 	cmd.Stdin = r.Body
 	output, err := cmd.Output()

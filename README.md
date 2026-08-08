@@ -11,7 +11,9 @@ Kohame is a compact self-hosted Git platform written in Go. It has a React + sha
 
 Open http://localhost:3000. The default [config.yml](D:\dev\kohame\config.yml) stores bare repositories in `./data/repos` and metadata in SQLite at `./data/kohame.db`.
 
-Create a repository in the UI, then use standard Git HTTP:
+On the first launch, complete the OOBE screen to create the administrator. Users can register when the administrator enables registration in **Site settings**.
+
+Git HTTP requires an authenticated Kohame account. Git will prompt for the account password:
 
 ```powershell
 git clone http://localhost:3000/git/my-repository
@@ -53,6 +55,11 @@ yarn dev
 
 Vite proxies `/api` and `/git` to `http://localhost:3000`, so the frontend behaves as it does in the embedded production build.
 
-## Current scope
+## Forge features
 
-This first version provides local repository creation, listing, and standard Git smart HTTP clone/fetch/push. It intentionally does not yet include accounts, authorization, pull requests, issues, or a repository file browser; do not expose it to an untrusted network until authentication is added.
+- One-time OOBE administrator creation, registration, login, and HttpOnly sessions.
+- Administrator-controlled title, description, and registration policy.
+- Repository creation plus Git smart HTTP with browser session or HTTP Basic authentication.
+- Repository-scoped issues, pull requests, releases, and activity-based contributor summaries.
+
+This is a compact forge, not a full Gitea replacement yet: pull requests track review metadata but do not yet calculate diffs, comments, or perform server-side merges. Use HTTPS when serving it beyond a trusted local network.
