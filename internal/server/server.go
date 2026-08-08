@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -36,7 +37,14 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forge.NewStore(db, cfg.Database.Driver), captcha: cfg.Captcha}, nil
+	forgeStore := forge.NewStore(db, cfg.Database.Driver)
+	settings, err := forgeStore.Settings(context.Background())
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	captcha := config.CaptchaConfig{Enabled: settings.CaptchaEnabled, SiteKey: settings.CaptchaSiteKey, Secret: settings.CaptchaSecret}
+	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forgeStore, captcha: captcha}, nil
 }
 
 func (s *Server) Close() error { return s.repos.Close() }

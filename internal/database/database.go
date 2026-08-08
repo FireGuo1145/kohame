@@ -63,5 +63,15 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
+	for key, value := range map[string]string{"repository_root": "data/repos", "captcha_enabled": "false", "captcha_site_key": "", "captcha_secret": ""} {
+		seed := `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING`
+		if cfg.Driver == "pgsql" {
+			seed = `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`
+		}
+		if _, err := db.Exec(seed, key, value); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("seed settings: %w", err)
+		}
+	}
 	return db, nil
 }

@@ -36,6 +36,10 @@ type SiteSettings struct {
 	Title             string `json:"title"`
 	Description       string `json:"description"`
 	AllowRegistration bool   `json:"allowRegistration"`
+	RepositoryRoot    string `json:"repositoryRoot"`
+	CaptchaEnabled    bool   `json:"captchaEnabled"`
+	CaptchaSiteKey    string `json:"captchaSiteKey"`
+	CaptchaSecret     string `json:"captchaSecret,omitempty"`
 }
 type Issue struct {
 	ID        int64     `json:"id"`
@@ -266,6 +270,14 @@ func (s *Store) Settings(ctx context.Context) (SiteSettings, error) {
 			settings.Description = value
 		case "allow_registration":
 			settings.AllowRegistration = value == "true"
+		case "repository_root":
+			settings.RepositoryRoot = value
+		case "captcha_enabled":
+			settings.CaptchaEnabled = value == "true"
+		case "captcha_site_key":
+			settings.CaptchaSiteKey = value
+		case "captcha_secret":
+			settings.CaptchaSecret = value
 		}
 	}
 	return settings, rows.Err()
@@ -274,7 +286,7 @@ func (s *Store) UpdateSettings(ctx context.Context, value SiteSettings) error {
 	if strings.TrimSpace(value.Title) == "" {
 		return fmt.Errorf("site title is required")
 	}
-	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration)}
+	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret)}
 	for key, item := range items {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO settings (key,value) VALUES (`+s.args(1, 2)+`) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, item); err != nil {
 			return err
