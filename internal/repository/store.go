@@ -18,11 +18,14 @@ var ErrExists = errors.New("repository already exists")
 var ErrNotFound = errors.New("repository not found")
 
 type Repository struct {
-	Scope     string    `json:"scope"`
-	Name      string    `json:"name"`
-	FullName  string    `json:"fullName"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Path      string    `json:"-"`
+	Scope      string    `json:"scope"`
+	Name       string    `json:"name"`
+	FullName   string    `json:"fullName"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	ForkedFrom string    `json:"forkedFrom,omitempty"`
+	Stars      int       `json:"stars"`
+	Forks      int       `json:"forks"`
+	Path       string    `json:"-"`
 }
 
 type TreeEntry struct {
@@ -64,7 +67,7 @@ func NewStore(root string, db *sql.DB, driver string) *Store {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) List() ([]Repository, error) {
-	rows, err := s.db.Query(`SELECT name, updated_at FROM repositories ORDER BY updated_at DESC`)
+	rows, err := s.db.Query(`SELECT r.name,r.updated_at,COALESCE(f.parent_name,''),COUNT(DISTINCT st.user_id),COUNT(DISTINCT children.repository_name) FROM repositories r LEFT JOIN repository_forks f ON f.repository_name=r.name LEFT JOIN repository_stars st ON st.repository_name=r.name LEFT JOIN repository_forks children ON children.parent_name=r.name GROUP BY r.name,r.updated_at,f.parent_name ORDER BY r.updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -73,15 +76,32 @@ func (s *Store) List() ([]Repository, error) {
 	for rows.Next() {
 		var fullName string
 		var updatedAt time.Time
-		if err := rows.Scan(&fullName, &updatedAt); err != nil {
+		var forkedFrom string
+		var stars, forks int
+		if err := rows.Scan(&fullName, &updatedAt, &forkedFrom, &stars, &forks); err != nil {
 			return nil, err
 		}
 		repo, err := s.fromFullName(fullName, updatedAt)
 		if err == nil {
+			repo.ForkedFrom, repo.Stars, repo.Forks = forkedFrom, stars, forks
 			repos = append(repos, repo)
 		}
 	}
 	return repos, rows.Err()
+}
+
+func (s *Store) ListByScope(scope string) ([]Repository, error) {
+	items, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Repository, 0)
+	for _, item := range items {
+		if item.Scope == scope {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) Create(ctx context.Context, scope, name string) (Repository, error) {
@@ -118,6 +138,61 @@ func (s *Store) Create(ctx context.Context, scope, name string) (Repository, err
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics) VALUES (`+s.placeholders(1, 2, 3, 4, 5)+`)`, fullName, "", "private", "main", "")
 	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: path}, nil
+}
+
+func (s *Store) Fork(ctx context.Context, source Repository, scope, name string) (Repository, error) {
+	if !validPart(scope) || !validPart(name) {
+		return Repository{}, ErrInvalidName
+	}
+	fullName := scope + "/" + name
+	if _, err := s.Get(scope, name); err == nil {
+		return Repository{}, ErrExists
+	} else if !errors.Is(err, ErrNotFound) {
+		return Repository{}, err
+	}
+	target := filepath.Join(s.root, scope, name+".git")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return Repository{}, err
+	}
+	if output, err := exec.CommandContext(ctx, "git", "clone", "--bare", source.Path, target).CombinedOutput(); err != nil {
+		return Repository{}, fmt.Errorf("fork repository: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	now := time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO repositories (name,created_at,updated_at) VALUES (`+s.placeholders(1, 2, 3)+`)`, fullName, now, now); err != nil {
+		return Repository{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO repository_forks (repository_name,parent_name) VALUES (`+s.placeholders(1, 2)+`)`, fullName, source.FullName); err != nil {
+		return Repository{}, err
+	}
+	settings, _ := s.Settings(ctx, source.FullName)
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics) VALUES (`+s.placeholders(1, 2, 3, 4, 5)+`)`, fullName, settings.Description, settings.Visibility, settings.DefaultBranch, strings.Join(settings.Topics, ","))
+	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: target, ForkedFrom: source.FullName}, nil
+}
+
+func (s *Store) ToggleStar(ctx context.Context, repositoryName string, userID int64) (bool, int, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE repository_name=`+s.placeholders(1)+` AND user_id=`+s.placeholders(2), repositoryName, userID).Scan(&exists)
+	if err != nil {
+		return false, 0, err
+	}
+	starred := exists == 0
+	if starred {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO repository_stars (repository_name,user_id,created_at) VALUES (`+s.placeholders(1, 2, 3)+`)`, repositoryName, userID, time.Now().UTC())
+	} else {
+		_, err = s.db.ExecContext(ctx, `DELETE FROM repository_stars WHERE repository_name=`+s.placeholders(1)+` AND user_id=`+s.placeholders(2), repositoryName, userID)
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	var count int
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE repository_name=`+s.placeholders(1), repositoryName).Scan(&count)
+	return starred, count, err
+}
+
+func (s *Store) Starred(ctx context.Context, repositoryName string, userID int64) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE repository_name=`+s.placeholders(1)+` AND user_id=`+s.placeholders(2), repositoryName, userID).Scan(&count)
+	return count > 0, err
 }
 
 func (s *Store) Settings(ctx context.Context, fullName string) (Settings, error) {
@@ -206,7 +281,9 @@ func (s *Store) GetFullName(fullName string) (Repository, error) {
 		return Repository{}, ErrNotFound
 	}
 	var updatedAt time.Time
-	err := s.db.QueryRow(`SELECT updated_at FROM repositories WHERE name = `+s.placeholders(1), fullName).Scan(&updatedAt)
+	var forkedFrom string
+	var stars, forks int
+	err := s.db.QueryRow(`SELECT r.updated_at,COALESCE(f.parent_name,''),(SELECT COUNT(*) FROM repository_stars WHERE repository_name=r.name),(SELECT COUNT(*) FROM repository_forks WHERE parent_name=r.name) FROM repositories r LEFT JOIN repository_forks f ON f.repository_name=r.name WHERE r.name = `+s.placeholders(1), fullName).Scan(&updatedAt, &forkedFrom, &stars, &forks)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Repository{}, ErrNotFound
 	}
@@ -214,6 +291,7 @@ func (s *Store) GetFullName(fullName string) (Repository, error) {
 		return Repository{}, err
 	}
 	repo, _ := s.fromFullName(fullName, updatedAt)
+	repo.ForkedFrom, repo.Stars, repo.Forks = forkedFrom, stars, forks
 	if info, err := os.Stat(repo.Path); err != nil || !info.IsDir() {
 		return Repository{}, ErrNotFound
 	}

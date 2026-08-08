@@ -59,6 +59,9 @@ Vite proxies `/api` and `/git` to `http://localhost:3000`, so the frontend behav
 
 - One-time OOBE administrator creation, registration, login, and HttpOnly sessions.
 - Administrator-controlled title, description, and registration policy.
+- GitHub-style repository actions: Star, bare-Git Fork, fork attribution, and in-app notifications for stars, forks, issues, and pull requests.
+- Work dashboard plus user and organization home pages.
+- Email verification with one-time, 24-hour links. Configure SMTP under **Site settings → SMTP 邮件服务** (host, port, username, password, and From address); STARTTLS is negotiated when the mail server advertises it.
 - Repository creation plus Git smart HTTP with browser session or HTTP Basic authentication.
 - Repository-scoped issues, pull requests, releases, and activity-based contributor summaries.
 

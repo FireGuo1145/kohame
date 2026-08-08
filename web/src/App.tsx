@@ -7,6 +7,8 @@ import {
 } from "react"
 import {
   Check,
+  Bell,
+  Building2,
   Copy,
   FolderGit2,
   GitBranch,
@@ -16,6 +18,8 @@ import {
   LogIn,
   LogOut,
   Megaphone,
+  Star,
+  User,
   Plus,
   Settings,
   Tag,
@@ -26,17 +30,26 @@ import {
 
 import { Button } from "@/components/ui/button"
 
-type User = { id: number; username: string; email: string; isAdmin: boolean }
+type User = { id: number; username: string; email: string; isAdmin: boolean; emailVerified: boolean }
 type SiteSettings = {
   title: string
   description: string
   allowRegistration: boolean
+  smtpHost: string
+  smtpPort: string
+  smtpUsername: string
+  smtpPassword: string
+  smtpFrom: string
 }
 type Repository = {
   scope: string
   name: string
   fullName: string
   updatedAt: string
+  forkedFrom?: string
+  stars: number
+  forks: number
+  starred?: boolean
 }
 type TreeEntry = { name: string; path: string; type: string }
 type Blob = { path: string; content: string; isText: boolean }
@@ -83,6 +96,10 @@ type Release = {
   createdAt: string
 }
 type Contributor = { username: string; contributions: number }
+type Notification = { id: number; kind: string; title: string; body: string; link: string; isRead: boolean; createdAt: string }
+type Profile = { username: string; createdAt: string; repositories: number; stars: number }
+type Organization = { name: string; role?: string }
+type OrganizationMember = { username: string; role: string }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -106,15 +123,14 @@ export default function App() {
     title: "Kohame",
     description: "Self-hosted Git, kept simple",
     allowRegistration: true,
+    smtpHost: "", smtpPort: "587", smtpUsername: "", smtpPassword: "", smtpFrom: "",
   })
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null)
   const [user, setUser] = useState<User | null>(null)
   const [repos, setRepos] = useState<Repository[]>([])
-  const [selected, setSelected] = useState<string | null>(() => {
-    const parts = window.location.pathname.split("/").filter(Boolean)
-    return parts.length === 2 ? parts.join("/") : null
-  })
-  const [panel, setPanel] = useState<"home" | "settings">("home")
+  const [selected, setSelected] = useState<string | null>(null)
+  const [routeValue, setRouteValue] = useState("")
+  const [panel, setPanel] = useState<"home" | "settings" | "work" | "notifications" | "profile" | "organization" | "verify">("home")
   const [error, setError] = useState("")
 
   const refresh = async () => {
@@ -148,8 +164,15 @@ export default function App() {
   useEffect(() => {
     const handlePopState = () => {
       const parts = window.location.pathname.split("/").filter(Boolean)
-      setSelected(parts.length === 2 ? parts.join("/") : null)
+      setSelected(parts.length === 2 && parts[0] !== "orgs" ? parts.join("/") : null)
+      if (parts[0] === "work") { setPanel("work"); setRouteValue("") }
+      else if (parts[0] === "notifications") { setPanel("notifications"); setRouteValue("") }
+      else if (parts[0] === "verify") { setPanel("verify"); setRouteValue("") }
+      else if (parts[0] === "orgs" && parts[1]) { setPanel("organization"); setRouteValue(parts[1]) }
+      else if (parts.length === 1) { setPanel("profile"); setRouteValue(parts[0]) }
+      else { setPanel("home"); setRouteValue("") }
     }
+    handlePopState()
     window.addEventListener("popstate", handlePopState)
     return () => window.removeEventListener("popstate", handlePopState)
   }, [])
@@ -157,11 +180,14 @@ export default function App() {
   const openRepo = (fullName: string) => {
     window.history.pushState({}, "", `/${fullName}`)
     setSelected(fullName)
+    setPanel("home")
   }
   const closeRepo = () => {
     window.history.pushState({}, "", "/")
     setSelected(null)
+    setPanel("home")
   }
+  const navigate = (path: string, next: typeof panel, value = "") => { window.history.pushState({}, "", path); setSelected(null); setPanel(next); setRouteValue(value) }
 
   if (needsSetup)
     return (
@@ -186,7 +212,7 @@ export default function App() {
   return (
     <main className="min-h-svh bg-[#fcfcfa] text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       <header className="sticky top-0 z-10 border-b border-zinc-200/80 bg-white/90 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5">
           <button
             onClick={() => {
               setPanel("home")
@@ -199,6 +225,10 @@ export default function App() {
             </span>
             {site.title}
           </button>
+          <nav className="hidden items-center gap-1 md:flex">
+            <Button variant="ghost" size="sm" onPress={() => navigate("/work", "work")}>工作台</Button>
+            <Button variant="ghost" size="sm" onPress={() => navigate("/", "home")}>探索</Button>
+          </nav>
           <div className="flex items-center gap-2">
             {user?.isAdmin && (
               <Button
@@ -213,18 +243,11 @@ export default function App() {
               </Button>
             )}
             {user ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onPress={async () => {
-                  await api<void>("/api/auth/logout", { method: "POST" })
-                  setUser(null)
-                  setPanel("home")
-                }}
-              >
-                <LogOut />{" "}
-                <span className="hidden sm:inline">{user.username}</span>
-              </Button>
+              <>
+                <Button variant="ghost" size="icon" aria-label="Notifications" onPress={() => navigate("/notifications", "notifications")}><Bell /></Button>
+                <Button variant="outline" size="sm" onPress={() => navigate(`/${user.username}`, "profile", user.username)}><User /> <span className="hidden sm:inline">{user.username}</span></Button>
+                <Button variant="ghost" size="icon" aria-label="Sign out" onPress={async () => { await api<void>("/api/auth/logout", { method: "POST" }); setUser(null); navigate("/", "home") }}><LogOut /></Button>
+              </>
             ) : (
               <Auth site={site} onUser={setUser} />
             )}
@@ -242,6 +265,16 @@ export default function App() {
         <AdminSettings site={site} onSaved={setSite} />
       ) : selected ? (
         <RepositoryView name={selected} user={user} onBack={closeRepo} />
+      ) : panel === "work" ? (
+        <WorkHome user={user} repos={repos} onOpen={openRepo} />
+      ) : panel === "notifications" ? (
+        <NotificationPage onOpen={(link) => { const parts = link.split("/").filter(Boolean); if (parts.length === 2) openRepo(parts.join("/")) }} />
+      ) : panel === "profile" ? (
+        <ProfilePage username={routeValue} currentUser={user} onOpen={openRepo} />
+      ) : panel === "organization" ? (
+        <OrganizationPage name={routeValue} onOpen={openRepo} />
+      ) : panel === "verify" ? (
+        <VerifyPage onDone={() => { void refresh(); navigate("/", "home") }} />
       ) : (
         <Dashboard
           site={site}
@@ -472,6 +505,49 @@ function HCaptcha({ onToken }: { onToken: (token: string) => void }) {
   return config?.enabled ? <div ref={host} className="pt-1" /> : null
 }
 
+function VerifyPage({ onDone }: { onDone: () => void }) {
+  const [message, setMessage] = useState("正在验证邮件地址…")
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("token")
+    if (!token) { setMessage("验证链接缺少令牌。"); return }
+    void api<{ message: string }>(`/api/auth/verify?token=${encodeURIComponent(token)}`)
+      .then((value) => { setMessage(value.message); setTimeout(onDone, 1800) })
+      .catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "邮件验证失败。"))
+  }, [onDone])
+  return <div className="mx-auto grid min-h-[60svh] max-w-xl place-items-center px-5 text-center"><div className="rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"><Check className="mx-auto mb-4 size-8 text-emerald-600" /><h1 className="text-xl font-semibold">邮箱验证</h1><p className="mt-2 text-sm text-zinc-500">{message}</p></div></div>
+}
+
+function WorkHome({ user, repos, onOpen }: { user: User | null; repos: Repository[]; onOpen: (name: string) => void }) {
+  const mine = user ? repos.filter((repo) => repo.scope === user.username) : []
+  return <div className="mx-auto max-w-7xl px-5 py-9"><div className="mb-8 flex items-end justify-between"><div><p className="text-sm font-medium text-emerald-700">你的工作主页</p><h1 className="text-3xl font-semibold tracking-tight">{user ? `欢迎回来，${user.username}` : "登录后查看工作台"}</h1><p className="mt-2 text-sm text-zinc-500">跟进自己拥有的项目、通知和组织协作。</p></div></div>{user ? <div className="grid gap-5 md:grid-cols-3"><Stat icon={<FolderGit2 />} label="个人仓库" value={String(mine.length)} /><Stat icon={<Star />} label="获得 Star" value={String(mine.reduce((total, repo) => total + repo.stars, 0))} /><Stat icon={<GitPullRequest />} label="可继续协作" value="Issues & PR" /></div> : null}<section className="mt-8"><h2 className="mb-3 font-semibold">最近仓库</h2><RepoCards repos={user ? mine : repos.slice(0, 6)} onOpen={onOpen} /></section></div>
+}
+
+function ProfilePage({ username, currentUser, onOpen }: { username: string; currentUser: User | null; onOpen: (name: string) => void }) {
+  const [profile, setProfile] = useState<Profile | null>(null); const [repos, setRepos] = useState<Repository[]>([]); const [message, setMessage] = useState(""); const [sending, setSending] = useState(false)
+  useEffect(() => { void Promise.all([api<Profile>(`/api/users/${username}`),api<Repository[]>(`/api/users/${username}/repos`)]).then(([p,r])=>{setProfile(p);setRepos(r)}).catch((cause:unknown)=>setMessage(cause instanceof Error?cause.message:"无法加载个人主页。")) },[username])
+  if (message) return <PageMessage title="个人主页" message={message} />
+  if (!profile) return <Loading />
+  const own = currentUser?.username === username
+  return <div className="mx-auto max-w-7xl px-5 py-9"><section className="rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><div className="flex items-center gap-4"><Avatar name={username} size="lg" /><div><h1 className="text-2xl font-semibold">{username}</h1><p className="mt-1 text-sm text-zinc-500">加入于 {when(profile.createdAt)}</p></div></div><div className="mt-5 flex gap-6 text-sm"><span><strong>{profile.repositories}</strong> repositories</span><span><strong>{profile.stars}</strong> stars</span></div>{own && !currentUser.emailVerified && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><span>邮箱尚未验证，部分协作通知可能无法送达。</span><Button size="sm" variant="outline" isDisabled={sending} onPress={async()=>{setSending(true);try{await api("/api/auth/verification",{method:"POST"})}catch(cause){setMessage(cause instanceof Error?cause.message:"发送失败")}finally{setSending(false)}}}>重新发送验证邮件</Button></div>}</section><section className="mt-8"><h2 className="mb-3 font-semibold">Repositories</h2><RepoCards repos={repos} onOpen={onOpen} /></section></div>
+}
+
+function OrganizationPage({ name, onOpen }: { name: string; onOpen: (name: string) => void }) {
+  const [org,setOrg]=useState<Organization|null>(null);const[members,setMembers]=useState<OrganizationMember[]>([]);const[repos,setRepos]=useState<Repository[]>([]);const[message,setMessage]=useState("")
+  useEffect(()=>{void Promise.all([api<Organization>(`/api/organizations/${name}`),api<OrganizationMember[]>(`/api/organizations/${name}/members`),api<Repository[]>(`/api/organizations/${name}/repos`)]).then(([o,m,r])=>{setOrg(o);setMembers(m);setRepos(r)}).catch((cause:unknown)=>setMessage(cause instanceof Error?cause.message:"无法加载组织主页。"))},[name])
+  if(message)return <PageMessage title="组织主页" message={message}/>;if(!org)return <Loading/>;return <div className="mx-auto max-w-7xl px-5 py-9"><section className="flex items-center gap-4 rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><span className="grid size-16 place-items-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-950"><Building2 /></span><div><h1 className="text-2xl font-semibold">{org.name}</h1><p className="mt-1 text-sm text-zinc-500">组织主页 · {members.length} 位成员</p></div></section><div className="mt-8 grid gap-8 lg:grid-cols-[1fr_280px]"><section><h2 className="mb-3 font-semibold">Repositories</h2><RepoCards repos={repos} onOpen={onOpen}/></section><aside><h2 className="mb-3 font-semibold">Members</h2><div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">{members.map(member=><div key={member.username} className="flex items-center justify-between border-b border-zinc-100 p-3 text-sm last:border-0 dark:border-zinc-800"><span className="flex items-center gap-2"><Avatar name={member.username}/>{member.username}</span><span className="text-xs text-zinc-500">{member.role}</span></div>)}</div></aside></div></div>
+}
+
+function NotificationPage({ onOpen }: { onOpen: (link: string) => void }) {
+  const [items,setItems]=useState<Notification[]>([]);const[message,setMessage]=useState("");useEffect(()=>{void api<Notification[]>("/api/notifications").then(setItems).catch((cause:unknown)=>setMessage(cause instanceof Error?cause.message:"请先登录以查看通知。"))},[])
+  return <div className="mx-auto max-w-3xl px-5 py-9"><h1 className="text-2xl font-semibold">通知</h1><p className="mt-1 text-sm text-zinc-500">Star、Fork 和仓库协作的最新动态。</p>{message?<p className="mt-5 rounded-xl bg-red-50 p-4 text-sm text-red-700">{message}</p>:<div className="mt-6 overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">{items.length?items.map(item=><button key={item.id} onClick={async()=>{if(!item.isRead){await api<void>(`/api/notifications/${item.id}/read`,{method:"PATCH"});setItems(items.map(value=>value.id===item.id?{...value,isRead:true}:value))}onOpen(item.link)}} className={`block w-full border-b border-zinc-100 p-4 text-left last:border-0 dark:border-zinc-800 ${item.isRead?"":"bg-emerald-50/60 dark:bg-emerald-950/20"}`}><strong className="text-sm">{item.title}</strong><p className="mt-1 text-sm text-zinc-500">{item.body} · {when(item.createdAt)}</p></button>):<Empty icon={<Bell/>} title="还没有通知" text="仓库的新 Star、Fork 和协作动态会显示在这里。"/>}</div>}</div>
+}
+
+function RepoCards({ repos, onOpen }: { repos: Repository[]; onOpen: (name: string) => void }) { return <div className="grid gap-3 md:grid-cols-2">{repos.length?repos.map(repo=><button key={repo.fullName} onClick={()=>onOpen(repo.fullName)} className="rounded-xl border border-zinc-200 bg-white p-4 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900"><span className="flex items-center justify-between gap-3"><strong className="truncate text-sm text-sky-700 dark:text-sky-300"><FolderGit2 className="mr-1 inline size-4"/>{repo.fullName}</strong><span className="text-xs text-zinc-500"><Star className="mr-1 inline size-3"/>{repo.stars}</span></span><p className="mt-3 text-xs text-zinc-500">更新于 {when(repo.updatedAt)}{repo.forkedFrom?` · forked from ${repo.forkedFrom}`:""}</p></button>):<div className="col-span-full rounded-xl border border-dashed border-zinc-300 p-7 text-center text-sm text-zinc-500">暂无仓库。</div>}</div> }
+function Avatar({name,size="sm"}:{name:string;size?:"sm"|"lg"}){return <span className={`${size==="lg"?"size-16 text-2xl":"size-7 text-xs"} grid shrink-0 place-items-center rounded-full bg-zinc-900 font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900`}>{name.slice(0,1).toUpperCase()}</span>}
+function Stat({icon,label,value}:{icon:ReactNode;label:string;value:string}){return <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"><span className="text-zinc-500">{icon}</span><strong className="mt-4 block text-2xl">{value}</strong><span className="text-sm text-zinc-500">{label}</span></div>}
+function Loading(){return <main className="grid min-h-[50svh] place-items-center text-sm text-zinc-500">加载中…</main>}
+function PageMessage({title,message}:{title:string;message:string}){return <div className="mx-auto max-w-3xl px-5 py-9"><h1 className="text-2xl font-semibold">{title}</h1><p className="mt-5 rounded-xl bg-red-50 p-4 text-sm text-red-700">{message}</p></div>}
+
 function Dashboard({
   site,
   user,
@@ -487,6 +563,7 @@ function Dashboard({
 }) {
   const [scope, setScope] = useState(user?.username ?? "")
   const [name, setName] = useState("")
+  const [organizationName, setOrganizationName] = useState("")
   const [message, setMessage] = useState("")
   const [copied, setCopied] = useState("")
   const create = async (event: FormEvent) => {
@@ -503,6 +580,19 @@ function Dashboard({
       setMessage(
         cause instanceof Error ? cause.message : "Could not create repository."
       )
+    }
+  }
+  const createOrganization = async (event: FormEvent) => {
+    event.preventDefault()
+    try {
+      const organization = await api<Organization>("/api/organizations", {
+        method: "POST",
+        body: JSON.stringify({ name: organizationName }),
+      })
+      window.history.pushState({}, "", `/orgs/${organization.name}`)
+      window.location.reload()
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Could not create organization.")
     }
   }
   return (
@@ -605,6 +695,13 @@ function Dashboard({
               your team.
             </p>
           )}
+          {user && (
+            <form className="mt-5 border-t border-zinc-100 pt-5 dark:border-zinc-800" onSubmit={createOrganization}>
+              <div className="mb-3 flex items-center gap-2"><Building2 className="size-4" /><h3 className="text-sm font-semibold">创建组织</h3></div>
+              <Field label="组织名称" value={organizationName} onChange={setOrganizationName} placeholder="my-team" />
+              <Button type="submit" variant="outline" className="mt-3 w-full"><Building2 /> 创建组织主页</Button>
+            </form>
+          )}
         </aside>
       </div>
     </>
@@ -635,18 +732,23 @@ function RepositoryView({
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [releases, setReleases] = useState<Release[]>([])
   const [contributors, setContributors] = useState<Contributor[]>([])
+  const [repository, setRepository] = useState<Repository | null>(null)
+  const [forkOpen, setForkOpen] = useState(false)
+  const [forkName, setForkName] = useState("")
   const [message, setMessage] = useState("")
   const load = async () => {
-    const [a, b, c, d] = await Promise.all([
+    const [a, b, c, d, repo] = await Promise.all([
       api<Issue[]>(`/api/repos/${name}/issues`),
       api<PullRequest[]>(`/api/repos/${name}/pulls`),
       api<Release[]>(`/api/repos/${name}/releases`),
       api<Contributor[]>(`/api/repos/${name}/contributors`),
+      api<Repository>(`/api/repos/${name}`),
     ])
     setIssues(a)
     setPulls(b)
     setReleases(c)
     setContributors(d)
+    setRepository(repo)
   }
   useEffect(() => {
     void load().catch((cause: unknown) =>
@@ -728,10 +830,13 @@ function RepositoryView({
             <p className="text-sm text-zinc-500">Git repository workspace</p>
           </div>
         </div>
-        <code className="rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
-          git clone {window.location.origin}/{name}.git
-        </code>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onPress={() => setForkOpen(true)} isDisabled={!user}><GitBranch /> Fork {repository?.forks ?? 0}</Button>
+          <Button variant={repository?.starred ? "secondary" : "outline"} size="sm" isDisabled={!user} onPress={async()=>{try{const result=await api<{starred:boolean;stars:number}>(`/api/repos/${name}/star`,{method:"POST"});setRepository(repository?{...repository,...result}:repository)}catch(cause){setMessage(cause instanceof Error?cause.message:"无法更新 Star。")}}}><Star className={repository?.starred?"fill-current":""} /> Star {repository?.stars ?? 0}</Button>
+          <code className="rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">git clone {window.location.origin}/{name}.git</code>
+        </div>
       </div>
+      {repository?.forkedFrom && <p className="mt-3 text-sm text-zinc-500">forked from <span className="font-medium text-sky-700 dark:text-sky-300">{repository.forkedFrom}</span></p>}
       <div className="mt-7 flex gap-1 overflow-auto border-b border-zinc-200 dark:border-zinc-800">
         {tabs.map(([value, label, icon]) => (
           <button
@@ -853,6 +958,31 @@ function RepositoryView({
         )}
         {tab === "settings" && <RepositorySettingsPanel name={name} />}
       </section>
+      {forkOpen && (
+        <Modal title="Fork repository" onClose={() => setForkOpen(false)}>
+          <form
+            className="space-y-4"
+            onSubmit={async (event) => {
+              event.preventDefault()
+              try {
+                const repo = await api<Repository>(`/api/repos/${name}/fork`, {
+                  method: "POST",
+                  body: JSON.stringify({ name: forkName, scope: user?.username }),
+                })
+                setForkOpen(false)
+                window.history.pushState({}, "", `/${repo.fullName}`)
+                window.location.reload()
+              } catch (cause) {
+                setMessage(cause instanceof Error ? cause.message : "Fork failed.")
+              }
+            }}
+          >
+            <p className="text-sm text-zinc-500">创建一份独立的 bare Git 仓库副本到你的个人空间。</p>
+            <Field label="Fork 名称" value={forkName} onChange={setForkName} placeholder={name.split("/")[1]} />
+            <Button type="submit"><GitBranch /> 创建 Fork</Button>
+          </form>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -1347,6 +1477,11 @@ function AdminSettings({
 }) {
   const [value, setValue] = useState(site)
   const [message, setMessage] = useState("")
+  useEffect(() => {
+    void api<SiteSettings>("/api/admin/settings")
+      .then(setValue)
+      .catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load settings."))
+  }, [])
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     try {
@@ -1404,6 +1539,16 @@ function AdminSettings({
             className="size-4"
           />
         </label>
+        <div className="rounded-xl border border-zinc-200 p-4 dark:border-zinc-700">
+          <div className="mb-4"><h3 className="font-medium">SMTP 邮件服务</h3><p className="mt-1 text-sm text-zinc-500">用于注册后的邮箱验证。支持 STARTTLS（通常为 587 端口）。</p></div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="SMTP host" value={value.smtpHost} onChange={(smtpHost) => setValue({ ...value, smtpHost })} placeholder="smtp.example.com" />
+            <Field label="SMTP port" value={value.smtpPort} onChange={(smtpPort) => setValue({ ...value, smtpPort })} placeholder="587" />
+            <Field label="SMTP username" value={value.smtpUsername} onChange={(smtpUsername) => setValue({ ...value, smtpUsername })} placeholder="mailer@example.com" />
+            <Field label="SMTP password" value={value.smtpPassword} onChange={(smtpPassword) => setValue({ ...value, smtpPassword })} placeholder="应用专用密码" type="password" />
+          </div>
+          <div className="mt-3"><Field label="From address" value={value.smtpFrom} onChange={(smtpFrom) => setValue({ ...value, smtpFrom })} placeholder="Kohame <noreply@example.com>" /></div>
+        </div>
         {message && <p className="text-sm text-emerald-700">{message}</p>}
         <Button type="submit">
           <Settings />

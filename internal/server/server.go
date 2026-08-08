@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"
 	"os/exec"
@@ -59,12 +62,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/admin/settings", s.updateSettings)
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("POST /api/auth/login", s.login)
+	mux.HandleFunc("GET /api/auth/verify", s.verifyEmail)
+	mux.HandleFunc("POST /api/auth/verification", s.resendVerification)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("GET /api/auth/me", s.me)
 	mux.HandleFunc("GET /api/scopes", s.scopes)
 	mux.HandleFunc("POST /api/organizations", s.createOrganization)
+	mux.HandleFunc("GET /api/organizations/{name}", s.organization)
+	mux.HandleFunc("GET /api/organizations/{name}/members", s.organizationMembers)
+	mux.HandleFunc("GET /api/organizations/{name}/repos", s.organizationRepos)
+	mux.HandleFunc("GET /api/users/{username}", s.userProfile)
+	mux.HandleFunc("GET /api/users/{username}/repos", s.userRepos)
+	mux.HandleFunc("GET /api/notifications", s.notifications)
+	mux.HandleFunc("PATCH /api/notifications/{id}/read", s.readNotification)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/fork", s.forkRepo)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/star", s.starRepo)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tree", s.tree)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/branches", s.branches)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tags", s.tags)
@@ -109,7 +123,14 @@ func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Could not read repository.")
 		return
 	}
-	writeJSON(w, http.StatusOK, repo)
+	starred := false
+	if user, err := s.currentUser(r); err == nil {
+		starred, _ = s.repos.Starred(r.Context(), repo.FullName, user.ID)
+	}
+	writeJSON(w, http.StatusOK, struct {
+		repository.Repository
+		Starred bool `json:"starred"`
+	}{repo, starred})
 }
 
 func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
@@ -193,9 +214,52 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
+		// An SMTP outage must not discard a successfully created account; users can resend from their profile.
+		_ = s.sendVerification(r, user)
 		s.startSession(w, r, user)
 		writeJSON(w, http.StatusCreated, user)
 	}
+}
+
+func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
+	if err := s.forge.VerifyEmail(r.Context(), r.URL.Query().Get("token")); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 400, "This verification link is invalid or expired.")
+	} else if err != nil {
+		writeError(w, 500, "Could not verify email.")
+	} else {
+		writeJSON(w, 200, map[string]string{"message": "Email verified. You can now use your account."})
+	}
+}
+func (s *Server) resendVerification(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if user.EmailVerified {
+		writeJSON(w, 200, map[string]string{"message": "Your email is already verified."})
+		return
+	}
+	if err := s.sendVerification(r, user); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"message": "Verification email sent."})
+}
+func (s *Server) sendVerification(r *http.Request, user forge.User) error {
+	settings, err := s.forge.Settings(r.Context())
+	if err != nil {
+		return err
+	}
+	token, err := s.forge.CreateEmailVerification(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	link := scheme + "://" + r.Host + "/verify?token=" + url.QueryEscape(token)
+	return sendMail(settings, user.Email, "Verify your "+settings.Title+" email", "Hello "+user.Username+",\r\n\r\nVerify your email address by opening:\r\n"+link+"\r\n\r\nThis link expires in 24 hours.\r\n")
 }
 func (s *Server) captchaSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"enabled": s.captcha.Enabled, "siteKey": s.captcha.SiteKey})
@@ -270,12 +334,159 @@ func (s *Server) createOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 201, org)
 }
+func (s *Server) organization(w http.ResponseWriter, r *http.Request) {
+	org, err := s.forge.Organization(r.Context(), r.PathValue("name"))
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Organization not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "Could not load organization.")
+		return
+	}
+	writeJSON(w, 200, org)
+}
+func (s *Server) organizationMembers(w http.ResponseWriter, r *http.Request) {
+	items, err := s.forge.OrganizationMembers(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load organization members.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) organizationRepos(w http.ResponseWriter, r *http.Request) {
+	items, err := s.repos.ListByScope(r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load repositories.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) userProfile(w http.ResponseWriter, r *http.Request) {
+	value, err := s.forge.Profile(r.Context(), r.PathValue("username"))
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "User not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "Could not load user.")
+		return
+	}
+	writeJSON(w, 200, value)
+}
+func (s *Server) userRepos(w http.ResponseWriter, r *http.Request) {
+	items, err := s.repos.ListByScope(r.PathValue("username"))
+	if err != nil {
+		writeError(w, 500, "Could not load repositories.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.Notifications(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, 500, "Could not load notifications.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) readNotification(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.ReadNotification(r.Context(), user.ID, id); err != nil {
+		writeError(w, 500, "Could not update notification.")
+		return
+	}
+	w.WriteHeader(204)
+}
+
+func (s *Server) forkRepo(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	source, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Scope string `json:"scope"`
+		Name  string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Scope == "" {
+		input.Scope = user.Username
+	}
+	allowed, err := s.forge.CanUseScope(r.Context(), user, input.Scope)
+	if err != nil || !allowed {
+		writeError(w, 403, "Choose your own username or an organization you belong to.")
+		return
+	}
+	repo, err := s.repos.Fork(r.Context(), source, strings.TrimSpace(input.Scope), strings.TrimSpace(input.Name))
+	if errors.Is(err, repository.ErrExists) {
+		writeError(w, 409, "That repository already exists.")
+		return
+	}
+	if errors.Is(err, repository.ErrInvalidName) {
+		writeError(w, 400, "Choose a valid fork name.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "Could not fork repository.")
+		return
+	}
+	if owner, err := s.forge.UserByUsername(r.Context(), source.Scope); err == nil && owner.ID != user.ID {
+		_ = s.forge.AddNotification(r.Context(), owner.ID, "fork", user.Username+" forked "+source.FullName, "A new fork is available.", "/"+repo.FullName)
+	}
+	writeJSON(w, 201, repo)
+}
+func (s *Server) starRepo(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	starred, count, err := s.repos.ToggleStar(r.Context(), repo.FullName, user.ID)
+	if err != nil {
+		writeError(w, 500, "Could not update star.")
+		return
+	}
+	if starred {
+		if owner, err := s.forge.UserByUsername(r.Context(), repo.Scope); err == nil && owner.ID != user.ID {
+			_ = s.forge.AddNotification(r.Context(), owner.ID, "star", user.Username+" starred "+repo.FullName, "Your repository has a new star.", "/"+repo.FullName)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"starred": starred, "stars": count})
+}
+func (s *Server) notifyRepositoryOwner(r *http.Request, actor forge.User, kind, title, body string) {
+	if owner, err := s.forge.UserByUsername(r.Context(), r.PathValue("scope")); err == nil && owner.ID != actor.ID {
+		_ = s.forge.AddNotification(r.Context(), owner.ID, kind, title, body, "/"+repoKey(r))
+	}
+}
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	value, err := s.forge.Settings(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Could not load site settings.")
 		return
 	}
+	// Public site metadata must never expose SMTP or CAPTCHA credentials.
+	value.CaptchaSecret = ""
+	value.SMTPHost, value.SMTPPort, value.SMTPUsername, value.SMTPPassword, value.SMTPFrom = "", "", "", "", ""
 	writeJSON(w, http.StatusOK, value)
 }
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +495,12 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = user
-	s.settings(w, r)
+	value, err := s.forge.Settings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load site settings.")
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
 }
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
@@ -332,6 +548,7 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
+	s.notifyRepositoryOwner(r, user, "issue", user.Username+" opened an issue", item.Title)
 	writeJSON(w, 201, item)
 }
 func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
@@ -414,6 +631,7 @@ func (s *Server) createPullRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
+	s.notifyRepositoryOwner(r, user, "pull_request", user.Username+" opened a pull request", item.Title)
 	writeJSON(w, 201, item)
 }
 func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
@@ -854,4 +1072,42 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func sendMail(settings forge.SiteSettings, to, subject, body string) error {
+	host, port := strings.TrimSpace(settings.SMTPHost), strings.TrimSpace(settings.SMTPPort)
+	if host == "" || port == "" || strings.TrimSpace(settings.SMTPFrom) == "" {
+		return errors.New("SMTP is not configured by the administrator")
+	}
+	address := net.JoinHostPort(host, port)
+	client, err := smtp.Dial(address)
+	if err != nil {
+		return fmt.Errorf("connect to SMTP: %w", err)
+	}
+	defer client.Close()
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("start SMTP TLS: %w", err)
+		}
+	}
+	if settings.SMTPUsername != "" {
+		if err := client.Auth(smtp.PlainAuth("", settings.SMTPUsername, settings.SMTPPassword, host)); err != nil {
+			return fmt.Errorf("authenticate SMTP: %w", err)
+		}
+	}
+	if err := client.Mail(settings.SMTPFrom); err != nil {
+		return err
+	}
+	if err := client.Rcpt(to); err != nil {
+		return err
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return err
+	}
+	_, err = writer.Write([]byte("From: " + settings.SMTPFrom + "\r\nTo: " + to + "\r\nSubject: " + subject + "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body))
+	if closeErr := writer.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }

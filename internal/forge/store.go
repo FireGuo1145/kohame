@@ -26,11 +26,12 @@ type Store struct {
 }
 
 type User struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	Email     string    `json:"email"`
-	IsAdmin   bool      `json:"isAdmin"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID            int64     `json:"id"`
+	Username      string    `json:"username"`
+	Email         string    `json:"email"`
+	IsAdmin       bool      `json:"isAdmin"`
+	EmailVerified bool      `json:"emailVerified"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 type SiteSettings struct {
 	Title             string `json:"title"`
@@ -40,6 +41,11 @@ type SiteSettings struct {
 	CaptchaEnabled    bool   `json:"captchaEnabled"`
 	CaptchaSiteKey    string `json:"captchaSiteKey"`
 	CaptchaSecret     string `json:"captchaSecret,omitempty"`
+	SMTPHost          string `json:"smtpHost"`
+	SMTPPort          string `json:"smtpPort"`
+	SMTPUsername      string `json:"smtpUsername"`
+	SMTPPassword      string `json:"smtpPassword,omitempty"`
+	SMTPFrom          string `json:"smtpFrom"`
 }
 type Issue struct {
 	ID        int64     `json:"id"`
@@ -76,6 +82,25 @@ type Contributor struct {
 type Organization struct {
 	Name string `json:"name"`
 	Role string `json:"role"`
+}
+type OrganizationMember struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+type Notification struct {
+	ID        int64     `json:"id"`
+	Kind      string    `json:"kind"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	Link      string    `json:"link"`
+	IsRead    bool      `json:"isRead"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+type Profile struct {
+	Username     string    `json:"username"`
+	CreatedAt    time.Time `json:"createdAt"`
+	Repositories int       `json:"repositories"`
+	Stars        int       `json:"stars"`
 }
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
@@ -175,6 +200,30 @@ func (s *Store) CanUseScope(ctx context.Context, user User, scope string) (bool,
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE o.name=`+s.arg(1)+` AND m.user_id=`+s.arg(2), scope, user.ID).Scan(&count)
 	return count > 0, err
 }
+func (s *Store) Organization(ctx context.Context, name string) (Organization, error) {
+	var org Organization
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM organizations WHERE name=`+s.arg(1), strings.ToLower(strings.TrimSpace(name))).Scan(&org.Name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Organization{}, ErrNotFound
+	}
+	return org, err
+}
+func (s *Store) OrganizationMembers(ctx context.Context, name string) ([]OrganizationMember, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.username,m.role FROM organizations o JOIN organization_members m ON m.organization_id=o.id JOIN users u ON u.id=m.user_id WHERE o.name=`+s.arg(1)+` ORDER BY m.role,u.username`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OrganizationMember{}
+	for rows.Next() {
+		var m OrganizationMember
+		if err := rows.Scan(&m.Username, &m.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
 
 func (s *Store) createUser(ctx context.Context, username, email, password string, admin bool) (User, error) {
 	username, email = strings.TrimSpace(strings.ToLower(username)), strings.TrimSpace(strings.ToLower(email))
@@ -191,20 +240,21 @@ func (s *Store) createUser(ctx context.Context, username, email, password string
 		return User{}, err
 	}
 	now := time.Now().UTC()
-	query := `INSERT INTO users (username, email, password_hash, is_admin, created_at) VALUES (` + s.args(1, 2, 3, 4, 5) + `)`
+	query := `INSERT INTO users (username, email, password_hash, is_admin, email_verified, created_at) VALUES (` + s.args(1, 2, 3, 4, 5, 6) + `)`
+	verified := admin
 	if s.driver == "pgsql" {
 		query += " RETURNING id"
 		var id int64
-		err = s.db.QueryRowContext(ctx, query, username, email, string(hash), admin, now).Scan(&id)
+		err = s.db.QueryRowContext(ctx, query, username, email, string(hash), admin, verified, now).Scan(&id)
 		if err == nil {
-			return User{ID: id, Username: username, Email: email, IsAdmin: admin, CreatedAt: now}, nil
+			return User{ID: id, Username: username, Email: email, IsAdmin: admin, EmailVerified: verified, CreatedAt: now}, nil
 		}
 	} else {
-		result, insertErr := s.db.ExecContext(ctx, query, username, email, string(hash), admin, now)
+		result, insertErr := s.db.ExecContext(ctx, query, username, email, string(hash), admin, verified, now)
 		err = insertErr
 		if err == nil {
 			id, _ := result.LastInsertId()
-			return User{ID: id, Username: username, Email: email, IsAdmin: admin, CreatedAt: now}, nil
+			return User{ID: id, Username: username, Email: email, IsAdmin: admin, EmailVerified: verified, CreatedAt: now}, nil
 		}
 	}
 	if isUnique(err) {
@@ -216,7 +266,7 @@ func (s *Store) createUser(ctx context.Context, username, email, password string
 func (s *Store) Authenticate(ctx context.Context, identity, password string) (User, error) {
 	var user User
 	var hash string
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, email, password_hash, is_admin, created_at FROM users WHERE username = `+s.arg(1)+` OR email = `+s.arg(2), strings.ToLower(identity), strings.ToLower(identity)).Scan(&user.ID, &user.Username, &user.Email, &hash, &user.IsAdmin, &user.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, username, email, password_hash, is_admin, email_verified, created_at FROM users WHERE username = `+s.arg(1)+` OR email = `+s.arg(2), strings.ToLower(identity), strings.ToLower(identity)).Scan(&user.ID, &user.Username, &user.Email, &hash, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUnauthorized
 	}
@@ -244,7 +294,7 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 }
 func (s *Store) UserBySession(ctx context.Context, token string) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.email,u.is_admin,u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=`+s.arg(1)+` AND s.expires_at > `+s.arg(2), tokenHash(token), time.Now().UTC()).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.email,u.is_admin,u.email_verified,u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=`+s.arg(1)+` AND s.expires_at > `+s.arg(2), tokenHash(token), time.Now().UTC()).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUnauthorized
 	}
@@ -278,6 +328,16 @@ func (s *Store) Settings(ctx context.Context) (SiteSettings, error) {
 			settings.CaptchaSiteKey = value
 		case "captcha_secret":
 			settings.CaptchaSecret = value
+		case "smtp_host":
+			settings.SMTPHost = value
+		case "smtp_port":
+			settings.SMTPPort = value
+		case "smtp_username":
+			settings.SMTPUsername = value
+		case "smtp_password":
+			settings.SMTPPassword = value
+		case "smtp_from":
+			settings.SMTPFrom = value
 		}
 	}
 	return settings, rows.Err()
@@ -286,7 +346,7 @@ func (s *Store) UpdateSettings(ctx context.Context, value SiteSettings) error {
 	if strings.TrimSpace(value.Title) == "" {
 		return fmt.Errorf("site title is required")
 	}
-	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret)}
+	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom)}
 	for key, item := range items {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO settings (key,value) VALUES (`+s.args(1, 2)+`) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, item); err != nil {
 			return err
@@ -455,6 +515,93 @@ func (s *Store) Contributors(ctx context.Context, repo string) ([]Contributor, e
 
 func (s *Store) activity(ctx context.Context, repo string, userID int64, kind string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO activities (repository_name,user_id,kind,created_at) VALUES (`+s.args(1, 2, 3, 4)+`)`, repo, userID, kind, time.Now().UTC())
+	return err
+}
+
+func (s *Store) CreateEmailVerification(ctx context.Context, userID int64) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(raw)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM email_verifications WHERE user_id=`+s.arg(1), userID)
+	if err != nil {
+		return "", err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO email_verifications (token_hash,user_id,expires_at) VALUES (`+s.args(1, 2, 3)+`)`, tokenHash(token), userID, time.Now().UTC().Add(24*time.Hour))
+	return token, err
+}
+
+func (s *Store) VerifyEmail(ctx context.Context, token string) error {
+	if len(token) != 64 {
+		return ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var userID int64
+	err = tx.QueryRowContext(ctx, `SELECT user_id FROM email_verifications WHERE token_hash=`+s.arg(1)+` AND expires_at > `+s.arg(2), tokenHash(token), time.Now().UTC()).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET email_verified=`+s.arg(1)+` WHERE id=`+s.arg(2), true, userID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM email_verifications WHERE user_id=`+s.arg(1), userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UserByUsername(ctx context.Context, username string) (User, error) {
+	var user User
+	err := s.db.QueryRowContext(ctx, `SELECT id,username,email,is_admin,email_verified,created_at FROM users WHERE username=`+s.arg(1), strings.ToLower(strings.TrimSpace(username))).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return user, err
+}
+
+func (s *Store) Profile(ctx context.Context, username string) (Profile, error) {
+	user, err := s.UserByUsername(ctx, username)
+	if err != nil {
+		return Profile{}, err
+	}
+	p := Profile{Username: user.Username, CreatedAt: user.CreatedAt}
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repositories WHERE name LIKE `+s.arg(1), user.Username+"/%").Scan(&p.Repositories)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE user_id=`+s.arg(1), user.ID).Scan(&p.Stars)
+	return p, nil
+}
+
+func (s *Store) AddNotification(ctx context.Context, userID int64, kind, title, body, link string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO notifications (user_id,kind,title,body,link,is_read,created_at) VALUES (`+s.args(1, 2, 3, 4, 5, 6, 7)+`)`, userID, kind, title, body, link, false, time.Now().UTC())
+	return err
+}
+
+func (s *Store) Notifications(ctx context.Context, userID int64) ([]Notification, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,title,body,link,is_read,created_at FROM notifications WHERE user_id=`+s.arg(1)+` ORDER BY created_at DESC LIMIT 50`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Notification{}
+	for rows.Next() {
+		var n Notification
+		if err := rows.Scan(&n.ID, &n.Kind, &n.Title, &n.Body, &n.Link, &n.IsRead, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ReadNotification(ctx context.Context, userID, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET is_read=`+s.arg(1)+` WHERE id=`+s.arg(2)+` AND user_id=`+s.arg(3), true, id, userID)
 	return err
 }
 func (s *Store) insertID(ctx context.Context, query string, args ...any) (int64, error) {
