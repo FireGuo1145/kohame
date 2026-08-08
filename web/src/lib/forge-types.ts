@@ -1,0 +1,17 @@
+export type User = { id: number; username: string; email: string; isAdmin: boolean; emailVerified: boolean }
+export type SiteSettings = { title: string; description: string; allowRegistration: boolean; smtpHost: string; smtpPort: string; smtpUsername: string; smtpPassword: string; smtpFrom: string; captchaEnabled: boolean; captchaSiteKey: string; captchaSecret: string; repositoryRoot: string }
+export type Repository = { scope: string; name: string; fullName: string; updatedAt: string; forkedFrom?: string; stars: number; forks: number; starred?: boolean }
+export type TreeEntry = { name: string; path: string; type: string }
+export type Blob = { path: string; content: string; isText: boolean }
+export type GitRef = { name: string; hash: string }
+export type Commit = { hash: string; subject: string; author: string; date: string }
+export type RepositorySettings = { description: string; visibility: "public" | "private"; defaultBranch: string; topics: string[] }
+export type CaptchaConfig = { enabled: boolean; siteKey: string }
+export type Issue = { id: number; title: string; body: string; state: string; author: string; createdAt: string }
+export type PullRequest = { id: number; title: string; body: string; sourceBranch: string; targetBranch: string; state: string; author: string; createdAt: string }
+export type Release = { id: number; tagName: string; title: string; notes: string; author: string; createdAt: string }
+export type Contributor = { username: string; contributions: number }
+export type Notification = { id: number; kind: string; title: string; body: string; link: string; isRead: boolean; createdAt: string }
+export type Profile = { username: string; displayName: string; bio: string; location: string; website: string; createdAt: string; repositories: number; stars: number }
+export type Organization = { name: string; role?: string }
+export type OrganizationMember = { username: string; role: string }

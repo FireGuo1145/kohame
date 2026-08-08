@@ -1,0 +1,20 @@
+import { useEffect, useState } from "react"
+import { useParams } from "react-router-dom"
+import { Button } from "@/components/ui/button"
+import { Avatar, Loading, PageMessage, RepoCards } from "@/components/forge-ui"
+import { api, when } from "@/lib/forge-api"
+import type { Profile, Repository, User } from "@/lib/forge-types"
+
+function ProfilePage({ username, currentUser, onOpen }: { username: string; currentUser: User | null; onOpen: (name: string) => void }) {
+  const [profile, setProfile] = useState<Profile | null>(null); const [repos, setRepos] = useState<Repository[]>([]); const [message, setMessage] = useState(""); const [sending, setSending] = useState(false)
+  useEffect(() => { void Promise.all([api<Profile>(`/api/users/${username}`),api<Repository[]>(`/api/users/${username}/repos`)]).then(([p,r])=>{setProfile(p);setRepos(r)}).catch((cause:unknown)=>setMessage(cause instanceof Error?cause.message:"无法加载个人主页。")) },[username])
+  if (message) return <PageMessage title="个人主页" message={message} />
+  if (!profile) return <Loading />
+  const own = currentUser?.username === username
+  return <div className="mx-auto max-w-7xl px-5 py-9"><section className="rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><div className="flex items-center gap-4"><Avatar name={username} size="lg" /><div><h1 className="text-2xl font-semibold">{profile.displayName || username}</h1><p className="mt-1 text-sm text-zinc-500">@{username} · 加入于 {when(profile.createdAt)}</p></div></div>{profile.bio&&<p className="mt-5 max-w-2xl text-sm leading-6 text-zinc-700 dark:text-zinc-300">{profile.bio}</p>}<div className="mt-5 flex flex-wrap gap-6 text-sm"><span><strong>{profile.repositories}</strong> 个仓库</span><span><strong>{profile.stars}</strong> 个 Star</span>{profile.location&&<span>📍 {profile.location}</span>}{profile.website&&<a className="text-sky-700 hover:underline dark:text-sky-300" href={profile.website} target="_blank" rel="noreferrer">个人网站</a>}</div>{own && !currentUser.emailVerified && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><span>邮箱尚未验证，部分协作通知可能无法送达。</span><Button size="sm" variant="outline" isDisabled={sending} onPress={async()=>{setSending(true);try{await api("/api/auth/verification",{method:"POST"})}catch(cause){setMessage(cause instanceof Error?cause.message:"发送失败")}finally{setSending(false)}}}>重新发送验证邮件</Button></div>}</section><section className="mt-8"><h2 className="mb-3 font-semibold">仓库</h2><RepoCards repos={repos} onOpen={onOpen} /></section></div>
+}
+
+export default function ProfileRoutePage({ user, onOpen }: { user: User | null; onOpen: (name: string) => void }) {
+  const { username } = useParams()
+  return username ? <ProfilePage username={username} currentUser={user} onOpen={onOpen} /> : null
+}
