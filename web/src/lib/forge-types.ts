@@ -8,6 +8,7 @@ export type Commit = { hash: string; subject: string; author: string; date: stri
 export type RepositorySettings = { description: string; visibility: "public" | "private"; defaultBranch: string; topics: string[] }
 export type CaptchaConfig = { enabled: boolean; siteKey: string }
 export type Issue = { id: number; title: string; body: string; state: string; author: string; createdAt: string }
+export type IssueComment = { id: number; author: string; body: string; createdAt: string }
 export type PullRequest = { id: number; title: string; body: string; sourceBranch: string; targetBranch: string; state: string; author: string; createdAt: string }
 export type Release = { id: number; tagName: string; title: string; notes: string; author: string; createdAt: string }
 export type Contributor = { username: string; contributions: number }

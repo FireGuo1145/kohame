@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, ChevronDown, CircleDot, Code2, Copy, FolderGit2, GitBranch, GitCompareArrows, GitPullRequest, ListFilter, Plus, Settings, Star, Tag, Users, X } from "lucide-react"
+import { ArrowLeft, ChevronDown, CircleDot, Code2, Copy, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Settings, Star, Tag, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Badge, Empty, Field } from "@/components/forge-ui"
+import { Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
-import type { Blob, Commit, Contributor, GitRef, Issue, PullRequest, Release, Repository, RepositorySettings, TreeEntry, User } from "@/lib/forge-types"
+import type { Blob, Commit, Contributor, GitRef, Issue, IssueComment, PullRequest, Release, Repository, RepositorySettings, TreeEntry, User } from "@/lib/forge-types"
 
 function RepositoryView({
   name,
@@ -20,7 +20,9 @@ function RepositoryView({
   const location = useLocation()
   const navigate = useNavigate()
   const subpath = location.pathname.slice(`/${name}`.length).replace(/^\//, "")
-  const tab = subpath === "issues/new" ? "issue-new" : subpath || "code"
+  const issueMatch = subpath.match(/^issues\/(\d+)$/)
+  const issueID = issueMatch ? Number(issueMatch[1]) : 0
+  const tab = subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : subpath || "code"
   const [issues, setIssues] = useState<Issue[]>([])
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [releases, setReleases] = useState<Release[]>([])
@@ -98,6 +100,7 @@ function RepositoryView({
   }
   const tabs = [
     ["code", "Code", <Code2 />],
+    ["commits", "Commits", <GitCommitHorizontal />],
     ["issues", "Issues", <CircleDot />],
     ["pulls", "Pull requests", <GitPullRequest />],
     ["branches", "Branches", <GitBranch />],
@@ -165,7 +168,7 @@ function RepositoryView({
             onDelete={(id) => remove("issues", id)}
             onStateChange={(id, state) => changeState("issues", id, state)}
             render={(item) => (
-              <>
+              <button onClick={() => navigate(`/${name}/issues/${item.id}`)} className="block text-left hover:text-sky-700 dark:hover:text-sky-300">
                 <Badge state={item.state} />
                 <strong className="ml-2">
                   #{item.id} {item.title}
@@ -173,11 +176,12 @@ function RepositoryView({
                 <p className="mt-1 text-sm text-zinc-500">
                   Opened by {item.author} · {when(item.createdAt)}
                 </p>
-              </>
+              </button>
             )}
           />
         )}
         {tab === "issue-new" && <IssueComposer user={user} onCancel={() => navigate(`/${name}/issues`)} onSubmit={async (value) => { if (await add("issue", value)) navigate(`/${name}/issues`) }} />}
+        {tab === "issue-detail" && <IssueDetail name={name} issueID={issueID} user={user} onBack={() => navigate(`/${name}/issues`)} onStateChange={(state) => changeState("issues", issueID, state)} />}
         {tab === "pulls" && <PullRequestList items={pulls} user={user} onNew={() => navigate(`/${name}/compare`)} onDelete={(id) => remove("pulls", id)} onStateChange={(id, state) => changeState("pulls", id, state)} />}
         {tab === "compare" && <CompareChanges name={name} user={user} onCancel={() => navigate(`/${name}/pulls`)} onCreated={async (value) => { if (await add("pull", value)) navigate(`/${name}/pulls`) }} />}
         {tab === "releases" && (
@@ -572,6 +576,38 @@ function IssueComposer({
 
 function IssueMeta({ label, value }: { label: string; value: string }) {
   return <div className="py-5"><p className="font-medium">{label}</p><p className="mt-2 text-zinc-500">{value}</p></div>
+}
+
+function IssueDetail({ name, issueID, user, onBack, onStateChange }: { name: string; issueID: number; user: User | null; onBack: () => void; onStateChange: (state: string) => void }) {
+  const [issue, setIssue] = useState<Issue | null>(null)
+  const [comments, setComments] = useState<IssueComment[]>([])
+  const [body, setBody] = useState("")
+  const [message, setMessage] = useState("")
+  const [saving, setSaving] = useState(false)
+  const load = async () => {
+    const [nextIssue, nextComments] = await Promise.all([
+      api<Issue>(`/api/repos/${name}/issues/${issueID}`),
+      api<IssueComment[]>(`/api/repos/${name}/issues/${issueID}/comments`),
+    ])
+    setIssue(nextIssue)
+    setComments(nextComments)
+  }
+  useEffect(() => { void load().catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load issue.")) }, [name, issueID])
+  if (!issue && !message) return <Loading />
+  if (!issue) return <PageMessage title="Issue" message={message} />
+  const updateState = (state: string) => { onStateChange(state); setIssue({ ...issue, state }) }
+  return <div className="mx-auto max-w-5xl">
+    <button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />所有 Issues</button>
+    <div className="border-b border-zinc-200 pb-5 dark:border-zinc-800"><h1 className="text-2xl font-semibold leading-tight">{issue.title} <span className="font-normal text-zinc-400">#{issue.id}</span></h1><div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500"><Badge state={issue.state} /><span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong> opened this issue {when(issue.createdAt)}</span></div></div>
+    <div className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_210px]">
+      <div className="space-y-5">
+        <article className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{issue.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong><span>opened {when(issue.createdAt)}</span></header><div className="min-h-24 whitespace-pre-wrap p-4 text-sm leading-6">{issue.body || <span className="text-zinc-400">No description provided.</span>}</div></article>
+        {comments.map((comment) => <article key={comment.id} className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-emerald-100 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{comment.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{comment.author}</strong><span>commented {when(comment.createdAt)}</span></header><div className="whitespace-pre-wrap p-4 text-sm leading-6">{comment.body}</div></article>)}
+        {user ? <form className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900" onSubmit={async (event) => { event.preventDefault(); if (!body.trim()) return; setSaving(true); setMessage(""); try { const comment = await api<IssueComment>(`/api/repos/${name}/issues/${issueID}/comments`, { method: "POST", body: JSON.stringify({ body }) }); setComments([...comments, comment]); setBody("") } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not post comment.") } finally { setSaving(false) } }}><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Leave a comment" className="min-h-28 w-full resize-y bg-transparent p-2 text-sm leading-6 outline-none" />{message && <p className="px-2 pb-2 text-sm text-red-600">{message}</p>}<div className="flex justify-end border-t border-zinc-100 pt-3 dark:border-zinc-800"><Button type="submit" isDisabled={saving || !body.trim()}><MessageSquare />{saving ? "Commenting..." : "Comment"}</Button></div></form> : <p className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700">登录后即可参与讨论。</p>}
+      </div>
+      <aside className="border-t border-zinc-200 text-sm dark:border-zinc-800 lg:border-t-0 lg:border-l lg:pl-5"><IssueMeta label="Assignees" value="No one assigned" /><IssueMeta label="Labels" value="No labels" /><IssueMeta label="Projects" value="No projects" />{user && <div className="py-5"><p className="font-medium">State</p><Button size="sm" variant="outline" className="mt-3" onPress={() => updateState(issue.state === "open" ? "closed" : "open")}>{issue.state === "open" ? "Close issue" : "Reopen issue"}</Button></div>}</aside>
+    </div>
+  </div>
 }
 
 function PullRequestList({ items, user, onNew, onDelete, onStateChange }: { items: PullRequest[]; user: User | null; onNew: () => void; onDelete: (id: number) => void; onStateChange: (id: number, state: string) => void }) {

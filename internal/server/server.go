@@ -91,8 +91,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues/{id}", s.issue)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/issues/{id}", s.updateIssue)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/issues/{id}", s.deleteIssue)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues/{id}/comments", s.listIssueComments)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues/{id}/comments", s.createIssueComment)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls", s.listPullRequests)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls", s.createPullRequest)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/pulls/{id}", s.updatePullRequest)
@@ -596,6 +599,76 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notifyRepositoryOwner(r, user, "issue", user.Username+" opened an issue", item.Title)
 	writeJSON(w, 201, item)
+}
+func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.forge.Issue(r.Context(), repoKey(r), id)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Issue not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load issue.")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+func (s *Server) listIssueComments(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.forge.Issue(r.Context(), repoKey(r), id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Issue not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load issue comments.")
+		return
+	}
+	items, err := s.forge.ListIssueComments(r.Context(), repoKey(r), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load issue comments.")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) createIssueComment(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	comment, err := s.forge.CreateIssueComment(r.Context(), repoKey(r), id, user, input.Body)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Issue not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, comment)
 }
 func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {

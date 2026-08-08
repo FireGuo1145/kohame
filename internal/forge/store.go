@@ -56,6 +56,12 @@ type Issue struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+type IssueComment struct {
+	ID        int64     `json:"id"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
 type PullRequest struct {
 	ID           int64     `json:"id"`
 	Title        string    `json:"title"`
@@ -396,6 +402,50 @@ func (s *Store) CreateIssue(ctx context.Context, repo string, user User, title, 
 	}
 	_ = s.activity(ctx, repo, user.ID, "issue")
 	return Issue{ID: id, Title: strings.TrimSpace(title), Body: strings.TrimSpace(body), State: "open", Author: user.Username, CreatedAt: now, UpdatedAt: now}, nil
+}
+func (s *Store) Issue(ctx context.Context, repo string, id int64) (Issue, error) {
+	var item Issue
+	err := s.db.QueryRowContext(ctx, `SELECT i.id,i.title,i.body,i.state,u.username,i.created_at,i.updated_at FROM issues i JOIN users u ON u.id=i.author_id WHERE i.repository_name=`+s.arg(1)+` AND i.id=`+s.arg(2), repo, id).Scan(&item.ID, &item.Title, &item.Body, &item.State, &item.Author, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Issue{}, ErrNotFound
+	}
+	return item, err
+}
+func (s *Store) ListIssueComments(ctx context.Context, repo string, issueID int64) ([]IssueComment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,u.username,c.body,c.created_at FROM issue_comments c JOIN users u ON u.id=c.author_id WHERE c.repository_name=`+s.arg(1)+` AND c.issue_id=`+s.arg(2)+` ORDER BY c.created_at ASC`, repo, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	comments := make([]IssueComment, 0)
+	for rows.Next() {
+		var item IssueComment
+		if err := rows.Scan(&item.ID, &item.Author, &item.Body, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		comments = append(comments, item)
+	}
+	return comments, rows.Err()
+}
+func (s *Store) CreateIssueComment(ctx context.Context, repo string, issueID int64, user User, body string) (IssueComment, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return IssueComment{}, fmt.Errorf("comment body is required")
+	}
+	if _, err := s.Issue(ctx, repo, issueID); err != nil {
+		return IssueComment{}, err
+	}
+	now := time.Now().UTC()
+	query := `INSERT INTO issue_comments (repository_name,issue_id,author_id,body,created_at) VALUES (` + s.args(1, 2, 3, 4, 5) + `)`
+	id, err := s.insertID(ctx, query, repo, issueID, user.ID, body, now)
+	if err != nil {
+		return IssueComment{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE issues SET updated_at=`+s.arg(1)+` WHERE repository_name=`+s.arg(2)+` AND id=`+s.arg(3), now, repo, issueID); err != nil {
+		return IssueComment{}, err
+	}
+	_ = s.activity(ctx, repo, user.ID, "issue_comment")
+	return IssueComment{ID: id, Author: user.Username, Body: body, CreatedAt: now}, nil
 }
 func (s *Store) UpdateIssueState(ctx context.Context, repo string, id int64, state string) error {
 	if state != "open" && state != "closed" {
