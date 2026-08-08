@@ -51,17 +51,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.me)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
-	mux.HandleFunc("GET /api/repos/{name}/issues", s.listIssues)
-	mux.HandleFunc("POST /api/repos/{name}/issues", s.createIssue)
-	mux.HandleFunc("PATCH /api/repos/{name}/issues/{id}", s.updateIssue)
-	mux.HandleFunc("GET /api/repos/{name}/pulls", s.listPullRequests)
-	mux.HandleFunc("POST /api/repos/{name}/pulls", s.createPullRequest)
-	mux.HandleFunc("PATCH /api/repos/{name}/pulls/{id}", s.updatePullRequest)
-	mux.HandleFunc("GET /api/repos/{name}/releases", s.listReleases)
-	mux.HandleFunc("POST /api/repos/{name}/releases", s.createRelease)
-	mux.HandleFunc("GET /api/repos/{name}/contributors", s.contributors)
-	mux.HandleFunc("GET /api/repos/{name}", s.getRepo)
-	mux.HandleFunc("/git/{name}/{rest...}", s.gitHTTP)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/tree", s.tree)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
+	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/issues/{id}", s.updateIssue)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls", s.listPullRequests)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls", s.createPullRequest)
+	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/pulls/{id}", s.updatePullRequest)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/releases", s.listReleases)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/releases", s.createRelease)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/contributors", s.contributors)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}", s.getRepo)
+	mux.HandleFunc("/git/{scope}/{name}/{rest...}", s.gitHTTP)
 	mux.Handle("/", spa())
 	return securityHeaders(mux)
 }
@@ -76,7 +78,7 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
-	repo, err := s.repos.Get(r.PathValue("name"))
+	repo, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name"))
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "Repository not found.")
 		return
@@ -93,16 +95,17 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Name string `json:"name"`
+		Scope string `json:"scope"`
+		Name  string `json:"name"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "Provide a repository name.")
 		return
 	}
-	repo, err := s.repos.Create(r.Context(), strings.TrimSpace(input.Name))
+	repo, err := s.repos.Create(r.Context(), strings.TrimSpace(input.Scope), strings.TrimSpace(input.Name))
 	switch {
 	case errors.Is(err, repository.ErrInvalidName):
-		writeError(w, http.StatusBadRequest, "Use 1–80 lowercase letters, numbers, dots, hyphens, or underscores.")
+		writeError(w, http.StatusBadRequest, "Scope and repository name use 1–80 lowercase letters, numbers, dots, hyphens, or underscores.")
 	case errors.Is(err, repository.ErrExists):
 		writeError(w, http.StatusConflict, "That repository already exists.")
 	case err != nil:
@@ -230,7 +233,7 @@ func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	items, err := s.forge.ListIssues(r.Context(), r.PathValue("name"))
+	items, err := s.forge.ListIssues(r.Context(), repoKey(r))
 	if err != nil {
 		writeError(w, 500, "Could not load issues.")
 		return
@@ -252,7 +255,7 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	item, err := s.forge.CreateIssue(r.Context(), r.PathValue("name"), user, input.Title, input.Body)
+	item, err := s.forge.CreateIssue(r.Context(), repoKey(r), user, input.Title, input.Body)
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
@@ -276,7 +279,7 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	err := s.forge.UpdateIssueState(r.Context(), r.PathValue("name"), id, input.State)
+	err := s.forge.UpdateIssueState(r.Context(), repoKey(r), id, input.State)
 	if errors.Is(err, forge.ErrNotFound) {
 		writeError(w, 404, "Issue not found.")
 		return
@@ -291,7 +294,7 @@ func (s *Server) listPullRequests(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	items, err := s.forge.ListPullRequests(r.Context(), r.PathValue("name"))
+	items, err := s.forge.ListPullRequests(r.Context(), repoKey(r))
 	if err != nil {
 		writeError(w, 500, "Could not load pull requests.")
 		return
@@ -315,7 +318,7 @@ func (s *Server) createPullRequest(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	item, err := s.forge.CreatePullRequest(r.Context(), r.PathValue("name"), user, input.Title, input.Body, input.SourceBranch, input.TargetBranch)
+	item, err := s.forge.CreatePullRequest(r.Context(), repoKey(r), user, input.Title, input.Body, input.SourceBranch, input.TargetBranch)
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
@@ -339,7 +342,7 @@ func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	err := s.forge.UpdatePullRequestState(r.Context(), r.PathValue("name"), id, input.State)
+	err := s.forge.UpdatePullRequestState(r.Context(), repoKey(r), id, input.State)
 	if errors.Is(err, forge.ErrNotFound) {
 		writeError(w, 404, "Pull request not found.")
 		return
@@ -354,7 +357,7 @@ func (s *Server) listReleases(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	items, err := s.forge.ListReleases(r.Context(), r.PathValue("name"))
+	items, err := s.forge.ListReleases(r.Context(), repoKey(r))
 	if err != nil {
 		writeError(w, 500, "Could not load releases.")
 		return
@@ -377,7 +380,7 @@ func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	item, err := s.forge.CreateRelease(r.Context(), r.PathValue("name"), user, input.TagName, input.Title, input.Notes)
+	item, err := s.forge.CreateRelease(r.Context(), repoKey(r), user, input.TagName, input.Title, input.Notes)
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
@@ -388,12 +391,46 @@ func (s *Server) contributors(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	items, err := s.forge.Contributors(r.Context(), r.PathValue("name"))
+	items, err := s.forge.Contributors(r.Context(), repoKey(r))
 	if err != nil {
 		writeError(w, 500, "Could not load contributors.")
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+func (s *Server) tree(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	entries, err := s.repos.Tree(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"), r.URL.Query().Get("path"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Tree not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not browse repository.")
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	file, err := s.repos.Blob(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"), r.URL.Query().Get("path"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "File not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not read file.")
+		return
+	}
+	writeJSON(w, http.StatusOK, file)
 }
 
 type credentials struct {
@@ -410,11 +447,28 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	return true
 }
 func (s *Server) hasRepo(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := s.repos.Get(r.PathValue("name")); err != nil {
+	if _, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name")); err != nil {
 		writeError(w, 404, "Repository not found.")
 		return false
 	}
 	return true
+}
+
+func (s *Server) requireRepo(w http.ResponseWriter, r *http.Request) (repository.Repository, bool) {
+	repo, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Repository not found.")
+		return repository.Repository{}, false
+	}
+	return repo, true
+}
+
+func repoKey(r *http.Request) string { return r.PathValue("scope") + "/" + r.PathValue("name") }
+func valueOr(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 func (s *Server) currentUser(r *http.Request) (forge.User, error) {
 	cookie, err := r.Cookie("kohame_session")
@@ -478,8 +532,8 @@ func (s *Server) gitHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "Sign in with your Kohame username and password to use Git HTTP.")
 		return
 	}
-	name := r.PathValue("name")
-	if _, err := s.repos.Get(name); err != nil {
+	scope, name := r.PathValue("scope"), r.PathValue("name")
+	if _, err := s.repos.Get(scope, name); err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -492,7 +546,7 @@ func (s *Server) gitHTTP(w http.ResponseWriter, r *http.Request) {
 	cmd.Env = append(os.Environ(),
 		"GIT_HTTP_EXPORT_ALL=1",
 		"GIT_PROJECT_ROOT="+s.reposRoot(),
-		"PATH_INFO=/"+name+".git/"+rest,
+		"PATH_INFO=/"+scope+"/"+name+".git/"+rest,
 		"REQUEST_METHOD="+r.Method,
 		"QUERY_STRING="+r.URL.RawQuery,
 		"CONTENT_TYPE="+r.Header.Get("Content-Type"),

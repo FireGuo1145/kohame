@@ -10,16 +10,30 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-var ErrInvalidName = errors.New("repository name must use lowercase letters, numbers, dots, hyphens, or underscores")
+var ErrInvalidName = errors.New("scope and repository name must use lowercase letters, numbers, dots, hyphens, or underscores")
 var ErrExists = errors.New("repository already exists")
 var ErrNotFound = errors.New("repository not found")
 
 type Repository struct {
+	Scope     string    `json:"scope"`
 	Name      string    `json:"name"`
+	FullName  string    `json:"fullName"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Path      string    `json:"-"`
+}
+
+type TreeEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type string `json:"type"`
+}
+type Blob struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	IsText  bool   `json:"isText"`
 }
 
 type Store struct {
@@ -31,7 +45,6 @@ type Store struct {
 func NewStore(root string, db *sql.DB, driver string) *Store {
 	return &Store{root: root, db: db, driver: driver}
 }
-
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) List() ([]Repository, error) {
@@ -40,33 +53,38 @@ func (s *Store) List() ([]Repository, error) {
 		return nil, err
 	}
 	defer rows.Close()
-
 	repos := make([]Repository, 0)
 	for rows.Next() {
-		var repo Repository
-		if err := rows.Scan(&repo.Name, &repo.UpdatedAt); err != nil {
+		var fullName string
+		var updatedAt time.Time
+		if err := rows.Scan(&fullName, &updatedAt); err != nil {
 			return nil, err
 		}
-		repo.Path = filepath.Join(s.root, repo.Name+".git")
-		repos = append(repos, repo)
+		repo, err := s.fromFullName(fullName, updatedAt)
+		if err == nil {
+			repos = append(repos, repo)
+		}
 	}
 	return repos, rows.Err()
 }
 
-func (s *Store) Create(ctx context.Context, name string) (Repository, error) {
-	if !validName(name) {
+func (s *Store) Create(ctx context.Context, scope, name string) (Repository, error) {
+	if !validPart(scope) || !validPart(name) {
 		return Repository{}, ErrInvalidName
 	}
-	if _, err := s.Get(name); err == nil {
+	fullName := scope + "/" + name
+	if _, err := s.Get(scope, name); err == nil {
 		return Repository{}, ErrExists
 	} else if !errors.Is(err, ErrNotFound) {
 		return Repository{}, err
 	}
-
-	path := filepath.Join(s.root, name+".git")
+	path := filepath.Join(s.root, scope, name+".git")
 	if _, err := os.Stat(path); err == nil {
 		return Repository{}, ErrExists
 	} else if !os.IsNotExist(err) {
+		return Repository{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return Repository{}, err
 	}
 	if output, err := exec.CommandContext(ctx, "git", "init", "--bare", path).CombinedOutput(); err != nil {
@@ -75,59 +93,135 @@ func (s *Store) Create(ctx context.Context, name string) (Repository, error) {
 	if output, err := exec.CommandContext(ctx, "git", "-C", path, "config", "http.receivepack", "true").CombinedOutput(); err != nil {
 		return Repository{}, fmt.Errorf("configure repository: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO repositories (name, created_at, updated_at) VALUES (`+s.placeholders(1, 2, 3)+`)`, name, now, now); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO repositories (name, created_at, updated_at) VALUES (`+s.placeholders(1, 2, 3)+`)`, fullName, now, now); err != nil {
 		if isUniqueViolation(err) {
 			return Repository{}, ErrExists
 		}
 		return Repository{}, fmt.Errorf("store repository metadata: %w", err)
 	}
-	return Repository{Name: name, UpdatedAt: now, Path: path}, nil
+	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: path}, nil
 }
 
-func (s *Store) Get(name string) (Repository, error) {
-	if !validName(name) {
+func (s *Store) Get(scope, name string) (Repository, error) {
+	if !validPart(scope) || !validPart(name) {
 		return Repository{}, ErrNotFound
 	}
-	var repo Repository
-	err := s.db.QueryRow(`SELECT name, updated_at FROM repositories WHERE name = `+s.placeholders(1), name).Scan(&repo.Name, &repo.UpdatedAt)
+	return s.GetFullName(scope + "/" + name)
+}
+func (s *Store) GetFullName(fullName string) (Repository, error) {
+	scope, name, ok := strings.Cut(fullName, "/")
+	if !ok || !validPart(scope) || !validPart(name) {
+		return Repository{}, ErrNotFound
+	}
+	var updatedAt time.Time
+	err := s.db.QueryRow(`SELECT updated_at FROM repositories WHERE name = `+s.placeholders(1), fullName).Scan(&updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Repository{}, ErrNotFound
 	}
 	if err != nil {
 		return Repository{}, err
 	}
-	repo.Path = filepath.Join(s.root, repo.Name+".git")
+	repo, _ := s.fromFullName(fullName, updatedAt)
 	if info, err := os.Stat(repo.Path); err != nil || !info.IsDir() {
 		return Repository{}, ErrNotFound
 	}
 	return repo, nil
 }
+func (s *Store) fromFullName(fullName string, updatedAt time.Time) (Repository, error) {
+	scope, name, ok := strings.Cut(fullName, "/")
+	if !ok || !validPart(scope) || !validPart(name) {
+		return Repository{}, ErrNotFound
+	}
+	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: updatedAt, Path: filepath.Join(s.root, scope, name+".git")}, nil
+}
+
+func (s *Store) Tree(ctx context.Context, repo Repository, ref, directory string) ([]TreeEntry, error) {
+	if !safeGitPath(directory) || !safeRef(ref) {
+		return nil, ErrNotFound
+	}
+	object := ref
+	if directory != "" {
+		object += ":" + directory
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "ls-tree", object).Output()
+	if err != nil {
+		// A newly created bare repository has no HEAD yet; it has an empty tree.
+		if ref == "HEAD" {
+			return []TreeEntry{}, nil
+		}
+		return nil, ErrNotFound
+	}
+	entries := make([]TreeEntry, 0)
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		meta := strings.Fields(parts[0])
+		if len(meta) < 2 {
+			continue
+		}
+		entryPath := parts[1]
+		if directory != "" {
+			entryPath = directory + "/" + entryPath
+		}
+		entries = append(entries, TreeEntry{Name: parts[1], Path: entryPath, Type: meta[1]})
+	}
+	return entries, nil
+}
+func (s *Store) Blob(ctx context.Context, repo Repository, ref, filePath string) (Blob, error) {
+	if !safeGitPath(filePath) || filePath == "" || !safeRef(ref) {
+		return Blob{}, ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "show", ref+":"+filePath).Output()
+	if err != nil {
+		return Blob{}, ErrNotFound
+	}
+	if len(output) > 1<<20 {
+		return Blob{Path: filePath, Content: "File is larger than 1 MiB.", IsText: false}, nil
+	}
+	return Blob{Path: filePath, Content: string(output), IsText: utf8.Valid(output) && !strings.Contains(string(output), "\x00")}, nil
+}
 
 func (s *Store) placeholders(numbers ...int) string {
 	items := make([]string, len(numbers))
-	for i, number := range numbers {
+	for i, n := range numbers {
 		if s.driver == "pgsql" {
-			items[i] = fmt.Sprintf("$%d", number)
+			items[i] = fmt.Sprintf("$%d", n)
 		} else {
 			items[i] = "?"
 		}
 	}
-	return strings.Join(items, ", ")
+	return strings.Join(items, ",")
 }
-
 func isUniqueViolation(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate key")
 }
-
-func validName(name string) bool {
-	if name == "" || len(name) > 80 || strings.Contains(name, "..") {
+func validPart(value string) bool {
+	if value == "" || len(value) > 80 || strings.Contains(value, "..") {
 		return false
 	}
-	for _, r := range name {
+	for _, r := range value {
 		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+func safeGitPath(value string) bool {
+	return !strings.Contains(value, "..") && !strings.HasPrefix(value, "/") && !strings.Contains(value, "\\")
+}
+func safeRef(value string) bool {
+	if value == "" || strings.Contains(value, "..") {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' || r == '/') {
 			return false
 		}
 	}
