@@ -35,6 +35,22 @@ type Blob struct {
 	Content string `json:"content"`
 	IsText  bool   `json:"isText"`
 }
+type Settings struct {
+	Description   string   `json:"description"`
+	Visibility    string   `json:"visibility"`
+	DefaultBranch string   `json:"defaultBranch"`
+	Topics        []string `json:"topics"`
+}
+type Ref struct {
+	Name string `json:"name"`
+	Hash string `json:"hash"`
+}
+type Commit struct {
+	Hash    string `json:"hash"`
+	Subject string `json:"subject"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+}
 
 type Store struct {
 	root   string
@@ -100,7 +116,82 @@ func (s *Store) Create(ctx context.Context, scope, name string) (Repository, err
 		}
 		return Repository{}, fmt.Errorf("store repository metadata: %w", err)
 	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics) VALUES (`+s.placeholders(1, 2, 3, 4, 5)+`)`, fullName, "", "private", "main", "")
 	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: path}, nil
+}
+
+func (s *Store) Settings(ctx context.Context, fullName string) (Settings, error) {
+	var value Settings
+	var topics string
+	err := s.db.QueryRowContext(ctx, `SELECT description,visibility,default_branch,topics FROM repository_settings WHERE repository_name=`+s.placeholders(1), fullName).Scan(&value.Description, &value.Visibility, &value.DefaultBranch, &topics)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Settings{Visibility: "private", DefaultBranch: "main", Topics: []string{}}, nil
+	}
+	if err != nil {
+		return value, err
+	}
+	value.Topics = splitTopics(topics)
+	return value, nil
+}
+func (s *Store) UpdateSettings(ctx context.Context, fullName string, value Settings) error {
+	if value.Visibility != "private" && value.Visibility != "public" {
+		return errors.New("visibility must be private or public")
+	}
+	if !safeRef(value.DefaultBranch) {
+		return errors.New("invalid default branch")
+	}
+	topics := splitTopics(strings.Join(value.Topics, ","))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics) VALUES (`+s.placeholders(1, 2, 3, 4, 5)+`) ON CONFLICT (repository_name) DO UPDATE SET description=EXCLUDED.description,visibility=EXCLUDED.visibility,default_branch=EXCLUDED.default_branch,topics=EXCLUDED.topics`, fullName, strings.TrimSpace(value.Description), value.Visibility, value.DefaultBranch, strings.Join(topics, ","))
+	return err
+}
+func (s *Store) Branches(ctx context.Context, repo Repository) ([]Ref, error) {
+	return s.refs(ctx, repo, "refs/heads")
+}
+func (s *Store) Tags(ctx context.Context, repo Repository) ([]Ref, error) {
+	return s.refs(ctx, repo, "refs/tags")
+}
+func (s *Store) refs(ctx context.Context, repo Repository, prefix string) ([]Ref, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "for-each-ref", "--format=%(refname:short)|%(objectname:short)", prefix).Output()
+	if err != nil {
+		return nil, err
+	}
+	refs := []Ref{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		p := strings.SplitN(line, "|", 2)
+		if len(p) == 2 {
+			refs = append(refs, Ref{Name: p[0], Hash: p[1]})
+		}
+	}
+	return refs, nil
+}
+func (s *Store) Commits(ctx context.Context, repo Repository, ref string) ([]Commit, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "log", "-n", "30", "--format=%h|%s|%an|%aI", ref).Output()
+	if err != nil {
+		return []Commit{}, nil
+	}
+	items := []Commit{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		p := strings.SplitN(line, "|", 4)
+		if len(p) == 4 {
+			items = append(items, Commit{Hash: p[0], Subject: p[1], Author: p[2], Date: p[3]})
+		}
+	}
+	return items, nil
+}
+func splitTopics(value string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(strings.ToLower(item))
+		if item != "" && !seen[item] {
+			seen[item] = true
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (s *Store) Get(scope, name string) (Repository, error) {

@@ -43,6 +43,7 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS activities (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, user_id BIGINT NOT NULL, kind VARCHAR(32) NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS organizations (id ` + idColumn + `, name VARCHAR(80) UNIQUE NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS organization_members (organization_id BIGINT NOT NULL, user_id BIGINT NOT NULL, role VARCHAR(16) NOT NULL, PRIMARY KEY (organization_id, user_id))`,
+		`CREATE TABLE IF NOT EXISTS repository_settings (repository_name VARCHAR(161) PRIMARY KEY, description TEXT NOT NULL DEFAULT '', visibility VARCHAR(16) NOT NULL DEFAULT 'private', default_branch VARCHAR(255) NOT NULL DEFAULT 'main', topics TEXT NOT NULL DEFAULT '')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

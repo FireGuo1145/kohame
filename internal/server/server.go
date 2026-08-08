@@ -58,6 +58,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tree", s.tree)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/branches", s.branches)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/tags", s.tags)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits", s.commits)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/settings", s.repositorySettings)
+	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/settings", s.updateRepositorySettings)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
@@ -547,6 +552,76 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, file)
+}
+func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.repos.Branches(r.Context(), repo)
+	if err != nil {
+		writeError(w, 500, "Could not list branches.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) tags(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.repos.Tags(r.Context(), repo)
+	if err != nil {
+		writeError(w, 500, "Could not list tags.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) commits(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.repos.Commits(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"))
+	if err != nil {
+		writeError(w, 500, "Could not list commits.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) repositorySettings(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	value, err := s.repos.Settings(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "Could not load repository settings.")
+		return
+	}
+	writeJSON(w, 200, value)
+}
+func (s *Server) updateRepositorySettings(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	allowed, err := s.forge.CanUseScope(r.Context(), user, r.PathValue("scope"))
+	if err != nil || !allowed {
+		writeError(w, 403, "No permission to manage this repository.")
+		return
+	}
+	var value repository.Settings
+	if !decodeJSON(w, r, &value) {
+		return
+	}
+	if err := s.repos.UpdateSettings(r.Context(), repoKey(r), value); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, value)
 }
 
 type credentials struct {
