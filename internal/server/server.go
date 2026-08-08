@@ -66,6 +66,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/verification", s.resendVerification)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("GET /api/auth/me", s.me)
+	mux.HandleFunc("GET /api/user/settings", s.personalSettings)
+	mux.HandleFunc("PATCH /api/user/settings", s.updatePersonalSettings)
 	mux.HandleFunc("GET /api/scopes", s.scopes)
 	mux.HandleFunc("POST /api/organizations", s.createOrganization)
 	mux.HandleFunc("GET /api/organizations/{name}", s.organization)
@@ -76,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/notifications", s.notifications)
 	mux.HandleFunc("PATCH /api/notifications/{id}/read", s.readNotification)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
+	mux.HandleFunc("GET /api/search", s.search)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/fork", s.forkRepo)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/star", s.starRepo)
@@ -111,6 +114,21 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, repos)
+}
+
+func (s *Server) search(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	repositories, err := s.repos.Search(query)
+	if err != nil {
+		writeError(w, 500, "Could not search repositories.")
+		return
+	}
+	users, err := s.forge.SearchProfiles(r.Context(), query)
+	if err != nil {
+		writeError(w, 500, "Could not search users.")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"repositories": repositories, "users": users})
 }
 
 func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +317,34 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		writeJSON(w, http.StatusOK, user)
 	}
+}
+func (s *Server) personalSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	value, err := s.forge.PersonalSettings(r.Context(), user)
+	if err != nil {
+		writeError(w, 500, "Could not load personal settings.")
+		return
+	}
+	writeJSON(w, 200, value)
+}
+func (s *Server) updatePersonalSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input forge.PersonalSettings
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	value, err := s.forge.UpdatePersonalSettings(r.Context(), user, input)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, value)
 }
 func (s *Server) scopes(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)

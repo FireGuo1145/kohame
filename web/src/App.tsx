@@ -18,6 +18,7 @@ import {
   LogIn,
   LogOut,
   Megaphone,
+  Search,
   Star,
   User,
   Plus,
@@ -27,8 +28,11 @@ import {
   Users,
   X,
 } from "lucide-react"
+import { Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 
 import { Button } from "@/components/ui/button"
+import { SearchPage } from "@/pages/SearchPage"
+import { AccountSettingsPage } from "@/pages/AccountSettingsPage"
 
 type User = { id: number; username: string; email: string; isAdmin: boolean; emailVerified: boolean }
 type SiteSettings = {
@@ -40,6 +44,10 @@ type SiteSettings = {
   smtpUsername: string
   smtpPassword: string
   smtpFrom: string
+  captchaEnabled: boolean
+  captchaSiteKey: string
+  captchaSecret: string
+  repositoryRoot: string
 }
 type Repository = {
   scope: string
@@ -97,7 +105,7 @@ type Release = {
 }
 type Contributor = { username: string; contributions: number }
 type Notification = { id: number; kind: string; title: string; body: string; link: string; isRead: boolean; createdAt: string }
-type Profile = { username: string; createdAt: string; repositories: number; stars: number }
+type Profile = { username: string; displayName: string; bio: string; location: string; website: string; createdAt: string; repositories: number; stars: number }
 type Organization = { name: string; role?: string }
 type OrganizationMember = { username: string; role: string }
 
@@ -114,23 +122,22 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const when = (date: string) =>
-  new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+  new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(
     new Date(date)
   )
 
 export default function App() {
+  const location = useLocation()
+  const routeNavigate = useNavigate()
   const [site, setSite] = useState<SiteSettings>({
     title: "Kohame",
     description: "Self-hosted Git, kept simple",
     allowRegistration: true,
-    smtpHost: "", smtpPort: "587", smtpUsername: "", smtpPassword: "", smtpFrom: "",
+    smtpHost: "", smtpPort: "587", smtpUsername: "", smtpPassword: "", smtpFrom: "", captchaEnabled: false, captchaSiteKey: "", captchaSecret: "", repositoryRoot: "",
   })
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null)
   const [user, setUser] = useState<User | null>(null)
   const [repos, setRepos] = useState<Repository[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const [routeValue, setRouteValue] = useState("")
-  const [panel, setPanel] = useState<"home" | "settings" | "work" | "notifications" | "profile" | "organization" | "verify">("home")
   const [error, setError] = useState("")
 
   const refresh = async () => {
@@ -161,33 +168,12 @@ export default function App() {
   useEffect(() => {
     document.title = `${site.title} · Self-hosted Git`
   }, [site.title])
-  useEffect(() => {
-    const handlePopState = () => {
-      const parts = window.location.pathname.split("/").filter(Boolean)
-      setSelected(parts.length === 2 && parts[0] !== "orgs" ? parts.join("/") : null)
-      if (parts[0] === "work") { setPanel("work"); setRouteValue("") }
-      else if (parts[0] === "notifications") { setPanel("notifications"); setRouteValue("") }
-      else if (parts[0] === "verify") { setPanel("verify"); setRouteValue("") }
-      else if (parts[0] === "orgs" && parts[1]) { setPanel("organization"); setRouteValue(parts[1]) }
-      else if (parts.length === 1) { setPanel("profile"); setRouteValue(parts[0]) }
-      else { setPanel("home"); setRouteValue("") }
-    }
-    handlePopState()
-    window.addEventListener("popstate", handlePopState)
-    return () => window.removeEventListener("popstate", handlePopState)
-  }, [])
-
   const openRepo = (fullName: string) => {
-    window.history.pushState({}, "", `/${fullName}`)
-    setSelected(fullName)
-    setPanel("home")
+    routeNavigate(`/${fullName}`)
   }
   const closeRepo = () => {
-    window.history.pushState({}, "", "/")
-    setSelected(null)
-    setPanel("home")
+    routeNavigate("/")
   }
-  const navigate = (path: string, next: typeof panel, value = "") => { window.history.pushState({}, "", path); setSelected(null); setPanel(next); setRouteValue(value) }
 
   if (needsSetup)
     return (
@@ -215,7 +201,6 @@ export default function App() {
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5">
           <button
             onClick={() => {
-              setPanel("home")
               closeRepo()
             }}
             className="flex items-center gap-2.5 font-semibold tracking-tight"
@@ -226,27 +211,31 @@ export default function App() {
             {site.title}
           </button>
           <nav className="hidden items-center gap-1 md:flex">
-            <Button variant="ghost" size="sm" onPress={() => navigate("/work", "work")}>工作台</Button>
-            <Button variant="ghost" size="sm" onPress={() => navigate("/", "home")}>探索</Button>
+            <Button variant="ghost" size="sm" onPress={() => routeNavigate("/work")}>工作台</Button>
+            <Button variant="ghost" size="sm" onPress={() => routeNavigate("/")}>探索</Button>
           </nav>
           <div className="flex items-center gap-2">
+            <form className="hidden lg:block" onSubmit={(event) => { event.preventDefault(); const query = new FormData(event.currentTarget).get("q")?.toString().trim(); if (query) routeNavigate(`/search?q=${encodeURIComponent(query)}`) }}>
+              <label className="flex h-8 w-56 items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-2 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"><Search className="size-4" /><input name="q" defaultValue={location.pathname === "/search" ? new URLSearchParams(location.search).get("q") || "" : ""} placeholder="搜索仓库和用户" className="w-full bg-transparent text-sm outline-none" /></label>
+            </form>
             {user?.isAdmin && (
               <Button
                 variant="ghost"
                 size="sm"
                 onPress={() =>
-                  setPanel(panel === "settings" ? "home" : "settings")
+                  routeNavigate(location.pathname === "/settings" ? "/" : "/settings")
                 }
               >
                 <Settings />{" "}
-                <span className="hidden sm:inline">Site settings</span>
+                <span className="hidden sm:inline">站点设置</span>
               </Button>
             )}
             {user ? (
               <>
-                <Button variant="ghost" size="icon" aria-label="Notifications" onPress={() => navigate("/notifications", "notifications")}><Bell /></Button>
-                <Button variant="outline" size="sm" onPress={() => navigate(`/${user.username}`, "profile", user.username)}><User /> <span className="hidden sm:inline">{user.username}</span></Button>
-                <Button variant="ghost" size="icon" aria-label="Sign out" onPress={async () => { await api<void>("/api/auth/logout", { method: "POST" }); setUser(null); navigate("/", "home") }}><LogOut /></Button>
+                <Button variant="ghost" size="icon" aria-label="通知" onPress={() => routeNavigate("/notifications")}><Bell /></Button>
+                <Button variant="outline" size="sm" onPress={() => routeNavigate(`/${user.username}`)}><User /> <span className="hidden sm:inline">{user.username}</span></Button>
+                <Button variant="ghost" size="icon" aria-label="个人设置" onPress={() => routeNavigate("/account")}><Settings /></Button>
+                <Button variant="ghost" size="icon" aria-label="退出登录" onPress={async () => { await api<void>("/api/auth/logout", { method: "POST" }); setUser(null); routeNavigate("/") }}><LogOut /></Button>
               </>
             ) : (
               <Auth site={site} onUser={setUser} />
@@ -261,31 +250,37 @@ export default function App() {
           </p>
         </div>
       )}
-      {panel === "settings" && user?.isAdmin ? (
-        <AdminSettings site={site} onSaved={setSite} />
-      ) : selected ? (
-        <RepositoryView name={selected} user={user} onBack={closeRepo} />
-      ) : panel === "work" ? (
-        <WorkHome user={user} repos={repos} onOpen={openRepo} />
-      ) : panel === "notifications" ? (
-        <NotificationPage onOpen={(link) => { const parts = link.split("/").filter(Boolean); if (parts.length === 2) openRepo(parts.join("/")) }} />
-      ) : panel === "profile" ? (
-        <ProfilePage username={routeValue} currentUser={user} onOpen={openRepo} />
-      ) : panel === "organization" ? (
-        <OrganizationPage name={routeValue} onOpen={openRepo} />
-      ) : panel === "verify" ? (
-        <VerifyPage onDone={() => { void refresh(); navigate("/", "home") }} />
-      ) : (
-        <Dashboard
-          site={site}
-          user={user}
-          repos={repos}
-          onRepos={setRepos}
-          onOpen={openRepo}
-        />
-      )}
+      <Routes>
+        <Route path="/settings" element={user?.isAdmin ? <AdminSettings site={site} onSaved={setSite} /> : <Dashboard site={site} user={user} repos={repos} onRepos={setRepos} onOpen={openRepo} onOrganization={(name) => routeNavigate(`/orgs/${name}`)} />} />
+        <Route path="/work" element={<WorkHome user={user} repos={repos} onOpen={openRepo} />} />
+        <Route path="/notifications" element={<NotificationPage onOpen={(link) => { const parts = link.split("/").filter(Boolean); if (parts.length === 2) openRepo(parts.join("/")) }} />} />
+        <Route path="/verify" element={<VerifyPage onDone={() => { void refresh(); routeNavigate("/") }} />} />
+        <Route path="/search" element={<SearchRoute onOpen={openRepo} onProfile={(username) => routeNavigate(`/${username}`)} />} />
+        <Route path="/account" element={<AccountSettingsPage user={user} />} />
+        <Route path="/orgs/:name" element={<OrganizationRoute onOpen={openRepo} />} />
+        <Route path="/:scope/:name" element={<RepositoryRoute user={user} onBack={closeRepo} onOpen={openRepo} />} />
+        <Route path="/:username" element={<ProfileRoute user={user} onOpen={openRepo} />} />
+        <Route path="*" element={<Dashboard site={site} user={user} repos={repos} onRepos={setRepos} onOpen={openRepo} onOrganization={(name) => routeNavigate(`/orgs/${name}`)} />} />
+      </Routes>
     </main>
   )
+}
+
+function RepositoryRoute({ user, onBack, onOpen }: { user: User | null; onBack: () => void; onOpen: (name: string) => void }) {
+  const { scope, name } = useParams()
+  return scope && name ? <RepositoryView name={`${scope}/${name}`} user={user} onBack={onBack} onOpen={onOpen} /> : null
+}
+function ProfileRoute({ user, onOpen }: { user: User | null; onOpen: (name: string) => void }) {
+  const { username } = useParams()
+  return username ? <ProfilePage username={username} currentUser={user} onOpen={onOpen} /> : null
+}
+function OrganizationRoute({ onOpen }: { onOpen: (name: string) => void }) {
+  const { name } = useParams()
+  return name ? <OrganizationPage name={name} onOpen={onOpen} /> : null
+}
+function SearchRoute({ onOpen, onProfile }: { onOpen: (name: string) => void; onProfile: (name: string) => void }) {
+  const location = useLocation()
+  return <SearchPage initialQuery={new URLSearchParams(location.search).get("q") || ""} onOpen={onOpen} onProfile={onProfile} />
 }
 
 function Setup({
@@ -338,23 +333,23 @@ function Setup({
         </p>
         <div className="mt-6 space-y-3">
           <Field
-            label="Username"
+            label="用户名"
             value={username}
             onChange={setUsername}
             placeholder="admin"
           />
           <Field
-            label="Email"
+            label="邮箱"
             value={email}
             onChange={setEmail}
             placeholder="admin@example.com"
             type="email"
           />
           <Field
-            label="Password"
+            label="密码"
             value={password}
             onChange={setPassword}
-            placeholder="At least 8 characters"
+            placeholder="至少 8 个字符"
             type="password"
           />
         </div>
@@ -431,7 +426,7 @@ function Auth({
     <div className="absolute top-14 right-5 z-20 w-80 rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="font-semibold">
-          {mode === "login" ? "Sign in" : "Create account"}
+          {mode === "login" ? "登录" : "注册账号"}
         </h2>
         <button onClick={() => setMode(null)}>
           <X className="size-4 text-zinc-500" />
@@ -439,14 +434,14 @@ function Auth({
       </div>
       <form onSubmit={submit} className="space-y-3">
         <Field
-          label={mode === "login" ? "Username or email" : "Username"}
+          label={mode === "login" ? "用户名或邮箱" : "用户名"}
           value={identity}
           onChange={setIdentity}
           placeholder={mode === "login" ? "you@example.com" : "octocat"}
         />
         {mode === "register" && (
           <Field
-            label="Email"
+            label="邮箱"
             value={email}
             onChange={setEmail}
             type="email"
@@ -454,7 +449,7 @@ function Auth({
           />
         )}
         <Field
-          label="Password"
+          label="密码"
           value={password}
           onChange={setPassword}
           type="password"
@@ -463,7 +458,7 @@ function Auth({
         {mode === "register" && <HCaptcha onToken={setCaptchaToken} />}
         {message && <p className="text-sm text-red-600">{message}</p>}
         <Button type="submit" className="w-full">
-          {mode === "login" ? "Sign in" : "Create account"}
+          {mode === "login" ? "登录" : "注册账号"}
         </Button>
       </form>
     </div>
@@ -528,7 +523,7 @@ function ProfilePage({ username, currentUser, onOpen }: { username: string; curr
   if (message) return <PageMessage title="个人主页" message={message} />
   if (!profile) return <Loading />
   const own = currentUser?.username === username
-  return <div className="mx-auto max-w-7xl px-5 py-9"><section className="rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><div className="flex items-center gap-4"><Avatar name={username} size="lg" /><div><h1 className="text-2xl font-semibold">{username}</h1><p className="mt-1 text-sm text-zinc-500">加入于 {when(profile.createdAt)}</p></div></div><div className="mt-5 flex gap-6 text-sm"><span><strong>{profile.repositories}</strong> repositories</span><span><strong>{profile.stars}</strong> stars</span></div>{own && !currentUser.emailVerified && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><span>邮箱尚未验证，部分协作通知可能无法送达。</span><Button size="sm" variant="outline" isDisabled={sending} onPress={async()=>{setSending(true);try{await api("/api/auth/verification",{method:"POST"})}catch(cause){setMessage(cause instanceof Error?cause.message:"发送失败")}finally{setSending(false)}}}>重新发送验证邮件</Button></div>}</section><section className="mt-8"><h2 className="mb-3 font-semibold">Repositories</h2><RepoCards repos={repos} onOpen={onOpen} /></section></div>
+  return <div className="mx-auto max-w-7xl px-5 py-9"><section className="rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><div className="flex items-center gap-4"><Avatar name={username} size="lg" /><div><h1 className="text-2xl font-semibold">{profile.displayName || username}</h1><p className="mt-1 text-sm text-zinc-500">@{username} · 加入于 {when(profile.createdAt)}</p></div></div>{profile.bio&&<p className="mt-5 max-w-2xl text-sm leading-6 text-zinc-700 dark:text-zinc-300">{profile.bio}</p>}<div className="mt-5 flex flex-wrap gap-6 text-sm"><span><strong>{profile.repositories}</strong> 个仓库</span><span><strong>{profile.stars}</strong> 个 Star</span>{profile.location&&<span>📍 {profile.location}</span>}{profile.website&&<a className="text-sky-700 hover:underline dark:text-sky-300" href={profile.website} target="_blank" rel="noreferrer">个人网站</a>}</div>{own && !currentUser.emailVerified && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><span>邮箱尚未验证，部分协作通知可能无法送达。</span><Button size="sm" variant="outline" isDisabled={sending} onPress={async()=>{setSending(true);try{await api("/api/auth/verification",{method:"POST"})}catch(cause){setMessage(cause instanceof Error?cause.message:"发送失败")}finally{setSending(false)}}}>重新发送验证邮件</Button></div>}</section><section className="mt-8"><h2 className="mb-3 font-semibold">仓库</h2><RepoCards repos={repos} onOpen={onOpen} /></section></div>
 }
 
 function OrganizationPage({ name, onOpen }: { name: string; onOpen: (name: string) => void }) {
@@ -554,12 +549,14 @@ function Dashboard({
   repos,
   onRepos,
   onOpen,
+  onOrganization,
 }: {
   site: SiteSettings
   user: User | null
   repos: Repository[]
   onRepos: (repos: Repository[]) => void
   onOpen: (name: string) => void
+  onOrganization: (name: string) => void
 }) {
   const [scope, setScope] = useState(user?.username ?? "")
   const [name, setName] = useState("")
@@ -589,8 +586,7 @@ function Dashboard({
         method: "POST",
         body: JSON.stringify({ name: organizationName }),
       })
-      window.history.pushState({}, "", `/orgs/${organization.name}`)
-      window.location.reload()
+      onOrganization(organization.name)
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Could not create organization.")
     }
@@ -601,14 +597,13 @@ function Dashboard({
         <div className="mx-auto max-w-6xl px-5">
           <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
             <HeartHandshake className="size-3" />
-            Your collaborative code forge
+            你的代码协作平台
           </p>
           <h1 className="text-4xl font-semibold tracking-[-.04em] sm:text-5xl">
             {site.description}
           </h1>
           <p className="mt-4 max-w-xl text-zinc-600 dark:text-zinc-400">
-            Host Git repositories, plan work with issues, review branches with
-            pull requests, and share releases from one place.
+            托管 Git 仓库、用 Issue 规划工作、通过 Pull Request 审查改动，并在同一处发布版本。
           </p>
         </div>
       </section>
@@ -616,9 +611,9 @@ function Dashboard({
         <section>
           <div className="mb-4 flex items-end justify-between">
             <div>
-              <h2 className="text-xl font-semibold">Repositories</h2>
+              <h2 className="text-xl font-semibold">仓库</h2>
               <p className="text-sm text-zinc-500">
-                {repos.length} hosted project{repos.length === 1 ? "" : "s"}
+                已托管 {repos.length} 个项目
               </p>
             </div>
           </div>
@@ -638,7 +633,7 @@ function Dashboard({
                       {repo.fullName}
                     </strong>
                     <small className="text-zinc-500">
-                      Updated {when(repo.updatedAt)}
+                      更新于 {when(repo.updatedAt)}
                     </small>
                   </span>
                   <Button
@@ -652,7 +647,7 @@ function Dashboard({
                   >
                     {copied === repo.fullName ? <Check /> : <Copy />}
                     <span className="hidden sm:inline">
-                      {copied === repo.fullName ? "Copied" : "Clone"}
+                      {copied === repo.fullName ? "已复制" : "克隆"}
                     </span>
                   </Button>
                 </button>
@@ -660,25 +655,25 @@ function Dashboard({
             ) : (
               <Empty
                 icon={<FolderGit2 />}
-                title="No repositories yet"
-                text="Create the first project after signing in."
+                title="还没有仓库"
+                text="登录后创建第一个项目。"
               />
             )}
           </div>
         </section>
         <aside className="h-fit rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <Plus className="mb-4 size-5" />
-          <h2 className="font-semibold">Create repository</h2>
+          <h2 className="font-semibold">创建仓库</h2>
           {user ? (
             <form className="mt-4 space-y-3" onSubmit={create}>
               <Field
-                label="Scope / owner"
+                label="所有者 / 命名空间"
                 value={scope}
                 onChange={setScope}
                 placeholder={user.username}
               />
               <Field
-                label="Repository name"
+                label="仓库名称"
                 value={name}
                 onChange={setName}
                 placeholder="my-project"
@@ -686,13 +681,12 @@ function Dashboard({
               {message && <p className="text-sm text-red-600">{message}</p>}
               <Button type="submit" className="w-full">
                 <Plus />
-                Create repository
+                创建仓库
               </Button>
             </form>
           ) : (
             <p className="mt-2 text-sm leading-6 text-zinc-500">
-              Sign in or register to create a repository and collaborate with
-              your team.
+              登录或注册后即可创建仓库并与你的团队协作。
             </p>
           )}
           {user && (
@@ -712,10 +706,12 @@ function RepositoryView({
   name,
   user,
   onBack,
+  onOpen,
 }: {
   name: string
   user: User | null
   onBack: () => void
+  onOpen: (name: string) => void
 }) {
   const [tab, setTab] = useState<
     | "code"
@@ -802,14 +798,14 @@ function RepositoryView({
     }
   }
   const tabs = [
-    ["code", "Code", <FolderGit2 />],
+    ["code", "代码", <FolderGit2 />],
     ["commits", "提交", <GitBranch />],
     ["branches", "分支", <GitBranch />],
     ["tags", "标签", <Tag />],
-    ["issues", "Issues", <Megaphone />],
-    ["pulls", "Pull requests", <GitPullRequest />],
-    ["releases", "Releases", <Tag />],
-    ["contributors", "Contributors", <Users />],
+    ["issues", "议题", <Megaphone />],
+    ["pulls", "拉取请求", <GitPullRequest />],
+    ["releases", "发布", <Tag />],
+    ["contributors", "贡献者", <Users />],
     ["settings", "设置", <Settings />],
   ] as const
   return (
@@ -818,7 +814,7 @@ function RepositoryView({
         onClick={onBack}
         className="mb-5 text-sm text-zinc-500 hover:text-zinc-900"
       >
-        ← All repositories
+        ← 所有仓库
       </button>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -827,16 +823,16 @@ function RepositoryView({
           </span>
           <div>
             <h1 className="text-2xl font-semibold">{name}</h1>
-            <p className="text-sm text-zinc-500">Git repository workspace</p>
+            <p className="text-sm text-zinc-500">Git 仓库工作区</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onPress={() => setForkOpen(true)} isDisabled={!user}><GitBranch /> Fork {repository?.forks ?? 0}</Button>
-          <Button variant={repository?.starred ? "secondary" : "outline"} size="sm" isDisabled={!user} onPress={async()=>{try{const result=await api<{starred:boolean;stars:number}>(`/api/repos/${name}/star`,{method:"POST"});setRepository(repository?{...repository,...result}:repository)}catch(cause){setMessage(cause instanceof Error?cause.message:"无法更新 Star。")}}}><Star className={repository?.starred?"fill-current":""} /> Star {repository?.stars ?? 0}</Button>
+          <Button variant="outline" size="sm" onPress={() => setForkOpen(true)} isDisabled={!user}><GitBranch /> 派生 {repository?.forks ?? 0}</Button>
+          <Button variant={repository?.starred ? "secondary" : "outline"} size="sm" isDisabled={!user} onPress={async()=>{try{const result=await api<{starred:boolean;stars:number}>(`/api/repos/${name}/star`,{method:"POST"});setRepository(repository?{...repository,...result}:repository)}catch(cause){setMessage(cause instanceof Error?cause.message:"无法更新 Star。")}}}><Star className={repository?.starred?"fill-current":""} /> 收藏 {repository?.stars ?? 0}</Button>
           <code className="rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">git clone {window.location.origin}/{name}.git</code>
         </div>
       </div>
-      {repository?.forkedFrom && <p className="mt-3 text-sm text-zinc-500">forked from <span className="font-medium text-sky-700 dark:text-sky-300">{repository.forkedFrom}</span></p>}
+      {repository?.forkedFrom && <p className="mt-3 text-sm text-zinc-500">派生自 <span className="font-medium text-sky-700 dark:text-sky-300">{repository.forkedFrom}</span></p>}
       <div className="mt-7 flex gap-1 overflow-auto border-b border-zinc-200 dark:border-zinc-800">
         {tabs.map(([value, label, icon]) => (
           <button
@@ -970,8 +966,7 @@ function RepositoryView({
                   body: JSON.stringify({ name: forkName, scope: user?.username }),
                 })
                 setForkOpen(false)
-                window.history.pushState({}, "", `/${repo.fullName}`)
-                window.location.reload()
+                onOpen(repo.fullName)
               } catch (cause) {
                 setMessage(cause instanceof Error ? cause.message : "Fork failed.")
               }
@@ -1499,35 +1494,40 @@ function AdminSettings({
     }
   }
   return (
-    <div className="mx-auto max-w-2xl px-5 py-10">
+    <div className="mx-auto grid max-w-6xl gap-8 px-5 py-10 md:grid-cols-[200px_1fr]">
+      <aside className="h-fit rounded-xl border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900"><p className="px-3 py-2 font-semibold">站点管理</p><p className="rounded-lg bg-zinc-100 px-3 py-2 font-medium dark:bg-zinc-800">常规设置</p><p className="px-3 py-2 text-zinc-500">注册与安全</p><p className="px-3 py-2 text-zinc-500">邮件与通知</p><p className="px-3 py-2 text-zinc-500">存储与维护</p></aside>
+      <div>
       <div className="mb-6">
-        <p className="text-sm font-medium text-emerald-700">Administrator</p>
-        <h1 className="text-2xl font-semibold">Site settings</h1>
+        <p className="text-sm font-medium text-emerald-700">管理员</p>
+        <h1 className="text-2xl font-semibold">站点设置</h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Customize the forge and control who can create an account.
+          配置站点品牌、账户注册、邮件投递与防滥用策略。
         </p>
       </div>
       <form
         onSubmit={submit}
         className="space-y-5 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
       >
-        <Field
-          label="Site title"
+        <section className="space-y-4 rounded-xl border border-zinc-200 p-5 dark:border-zinc-700"><h2 className="font-semibold">基础信息</h2><Field
+          label="站点名称"
           value={value.title}
           onChange={(title) => setValue({ ...value, title })}
           placeholder="Kohame"
         />
         <Field
-          label="Site description"
+          label="站点说明"
           value={value.description}
           onChange={(description) => setValue({ ...value, description })}
-          placeholder="A home for code"
+          placeholder="代码协作的家园"
         />
+        <Field label="仓库存储目录" value={value.repositoryRoot} onChange={(repositoryRoot)=>setValue({...value,repositoryRoot})} placeholder="data/repos" />
+        <p className="text-xs text-zinc-500">修改存储目录不会自动迁移已存在仓库；迁移前请先备份数据。</p></section>
+        <section className="space-y-4 rounded-xl border border-zinc-200 p-5 dark:border-zinc-700"><h2 className="font-semibold">注册与防滥用</h2>
         <label className="flex cursor-pointer items-center justify-between gap-5 rounded-xl bg-zinc-50 p-4 text-sm dark:bg-zinc-950">
           <span>
-            <strong className="block">Allow registration</strong>
+            <strong className="block">允许用户注册</strong>
             <span className="text-zinc-500">
-              Permit new users to create accounts.
+              开启后，访客可自行创建 Kohame 账户。
             </span>
           </span>
           <input
@@ -1539,22 +1539,25 @@ function AdminSettings({
             className="size-4"
           />
         </label>
+        <label className="flex cursor-pointer items-center justify-between gap-5 rounded-xl bg-zinc-50 p-4 text-sm dark:bg-zinc-950"><span><strong className="block">启用 hCaptcha</strong><span className="text-zinc-500">在注册页验证访客，降低机器人注册风险。</span></span><input type="checkbox" checked={value.captchaEnabled} onChange={(event)=>setValue({...value,captchaEnabled:event.target.checked})} className="size-4" /></label>
+        {value.captchaEnabled&&<div className="grid gap-3 sm:grid-cols-2"><Field label="hCaptcha Site Key" value={value.captchaSiteKey} onChange={(captchaSiteKey)=>setValue({...value,captchaSiteKey})} placeholder="10000000-ffff-ffff-ffff-000000000001"/><Field label="hCaptcha Secret" value={value.captchaSecret} onChange={(captchaSecret)=>setValue({...value,captchaSecret})} placeholder="密钥" type="password"/></div>}</section>
         <div className="rounded-xl border border-zinc-200 p-4 dark:border-zinc-700">
           <div className="mb-4"><h3 className="font-medium">SMTP 邮件服务</h3><p className="mt-1 text-sm text-zinc-500">用于注册后的邮箱验证。支持 STARTTLS（通常为 587 端口）。</p></div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="SMTP host" value={value.smtpHost} onChange={(smtpHost) => setValue({ ...value, smtpHost })} placeholder="smtp.example.com" />
-            <Field label="SMTP port" value={value.smtpPort} onChange={(smtpPort) => setValue({ ...value, smtpPort })} placeholder="587" />
-            <Field label="SMTP username" value={value.smtpUsername} onChange={(smtpUsername) => setValue({ ...value, smtpUsername })} placeholder="mailer@example.com" />
-            <Field label="SMTP password" value={value.smtpPassword} onChange={(smtpPassword) => setValue({ ...value, smtpPassword })} placeholder="应用专用密码" type="password" />
+            <Field label="SMTP 主机" value={value.smtpHost} onChange={(smtpHost) => setValue({ ...value, smtpHost })} placeholder="smtp.example.com" />
+            <Field label="SMTP 端口" value={value.smtpPort} onChange={(smtpPort) => setValue({ ...value, smtpPort })} placeholder="587" />
+            <Field label="SMTP 用户名" value={value.smtpUsername} onChange={(smtpUsername) => setValue({ ...value, smtpUsername })} placeholder="mailer@example.com" />
+            <Field label="SMTP 密码" value={value.smtpPassword} onChange={(smtpPassword) => setValue({ ...value, smtpPassword })} placeholder="应用专用密码" type="password" />
           </div>
-          <div className="mt-3"><Field label="From address" value={value.smtpFrom} onChange={(smtpFrom) => setValue({ ...value, smtpFrom })} placeholder="Kohame <noreply@example.com>" /></div>
+          <div className="mt-3"><Field label="发件人地址" value={value.smtpFrom} onChange={(smtpFrom) => setValue({ ...value, smtpFrom })} placeholder="noreply@example.com" /></div>
         </div>
         {message && <p className="text-sm text-emerald-700">{message}</p>}
         <Button type="submit">
           <Settings />
-          Save settings
+          保存站点设置
         </Button>
       </form>
+      </div>
     </div>
   )
 }

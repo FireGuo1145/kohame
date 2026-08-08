@@ -104,6 +104,24 @@ func (s *Store) ListByScope(scope string) ([]Repository, error) {
 	return out, nil
 }
 
+func (s *Store) Search(query string) ([]Repository, error) {
+	items, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return []Repository{}, nil
+	}
+	out := make([]Repository, 0)
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(item.FullName), query) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) Create(ctx context.Context, scope, name string) (Repository, error) {
 	if !validPart(scope) || !validPart(name) {
 		return Repository{}, ErrInvalidName

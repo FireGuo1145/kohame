@@ -98,9 +98,22 @@ type Notification struct {
 }
 type Profile struct {
 	Username     string    `json:"username"`
+	DisplayName  string    `json:"displayName"`
+	Bio          string    `json:"bio"`
+	Location     string    `json:"location"`
+	Website      string    `json:"website"`
 	CreatedAt    time.Time `json:"createdAt"`
 	Repositories int       `json:"repositories"`
 	Stars        int       `json:"stars"`
+}
+type PersonalSettings struct {
+	Username    string `json:"username"`
+	Email       string `json:"email"`
+	Verified    bool   `json:"verified"`
+	DisplayName string `json:"displayName"`
+	Bio         string `json:"bio"`
+	Location    string `json:"location"`
+	Website     string `json:"website"`
 }
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
@@ -573,9 +586,59 @@ func (s *Store) Profile(ctx context.Context, username string) (Profile, error) {
 		return Profile{}, err
 	}
 	p := Profile{Username: user.Username, CreatedAt: user.CreatedAt}
+	_ = s.db.QueryRowContext(ctx, `SELECT display_name,bio,location,website FROM user_settings WHERE user_id=`+s.arg(1), user.ID).Scan(&p.DisplayName, &p.Bio, &p.Location, &p.Website)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repositories WHERE name LIKE `+s.arg(1), user.Username+"/%").Scan(&p.Repositories)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE user_id=`+s.arg(1), user.ID).Scan(&p.Stars)
 	return p, nil
+}
+
+func (s *Store) PersonalSettings(ctx context.Context, user User) (PersonalSettings, error) {
+	value := PersonalSettings{Username: user.Username, Email: user.Email, Verified: user.EmailVerified}
+	err := s.db.QueryRowContext(ctx, `SELECT display_name,bio,location,website FROM user_settings WHERE user_id=`+s.arg(1), user.ID).Scan(&value.DisplayName, &value.Bio, &value.Location, &value.Website)
+	if errors.Is(err, sql.ErrNoRows) {
+		return value, nil
+	}
+	return value, err
+}
+
+func (s *Store) UpdatePersonalSettings(ctx context.Context, user User, value PersonalSettings) (PersonalSettings, error) {
+	value.DisplayName = strings.TrimSpace(value.DisplayName)
+	value.Bio = strings.TrimSpace(value.Bio)
+	value.Location = strings.TrimSpace(value.Location)
+	value.Website = strings.TrimSpace(value.Website)
+	if len(value.DisplayName) > 80 || len(value.Bio) > 500 || len(value.Location) > 120 || len(value.Website) > 255 {
+		return PersonalSettings{}, fmt.Errorf("profile fields are too long")
+	}
+	if value.Website != "" && !(strings.HasPrefix(value.Website, "https://") || strings.HasPrefix(value.Website, "http://")) {
+		return PersonalSettings{}, fmt.Errorf("website must start with http:// or https://")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO user_settings (user_id,display_name,bio,location,website) VALUES (`+s.args(1, 2, 3, 4, 5)+`) ON CONFLICT (user_id) DO UPDATE SET display_name=EXCLUDED.display_name,bio=EXCLUDED.bio,location=EXCLUDED.location,website=EXCLUDED.website`, user.ID, value.DisplayName, value.Bio, value.Location, value.Website)
+	if err != nil {
+		return PersonalSettings{}, err
+	}
+	value.Username, value.Email, value.Verified = user.Username, user.Email, user.EmailVerified
+	return value, nil
+}
+
+func (s *Store) SearchProfiles(ctx context.Context, query string) ([]Profile, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return []Profile{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT username,created_at FROM users WHERE LOWER(username) LIKE `+s.arg(1)+` ORDER BY username LIMIT 20`, "%"+query+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Profile{}
+	for rows.Next() {
+		var p Profile
+		if err := rows.Scan(&p.Username, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) AddNotification(ctx context.Context, userID int64, kind, title, body, link string) error {
