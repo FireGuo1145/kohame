@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, Star, Tag, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
+import { Avatar, Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
-import type { Blob, Commit, Contributor, GitRef, Issue, IssueComment, PullRequest, Release, Repository, RepositorySettings, TreeEntry, User } from "@/lib/forge-types"
+import type { Blob, Commit, CommitDetail, Contributor, GitRef, Issue, IssueComment, PullRequest, Release, Repository, RepositorySettings, TreeEntry, User } from "@/lib/forge-types"
 
 function RepositoryView({
   name,
@@ -23,7 +23,8 @@ function RepositoryView({
   const issueMatch = subpath.match(/^issues\/(\d+)$/)
   const issueID = issueMatch ? Number(issueMatch[1]) : 0
   const filePath = subpath.startsWith("blob/") ? decodeURIComponent(subpath.slice("blob/".length)) : ""
-  const tab = subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : filePath ? "file" : subpath || "code"
+  const fileRef = new URLSearchParams(location.search).get("ref") || "HEAD"
+  const tab = subpath === "new" ? "file-new" : subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : filePath ? "file" : subpath || "code"
   const [issues, setIssues] = useState<Issue[]>([])
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [releases, setReleases] = useState<Release[]>([])
@@ -153,8 +154,9 @@ function RepositoryView({
         </p>
       )}
       <section className="mt-6">
-        {tab === "code" && <CodeBrowser name={name} onOpenFile={(path) => navigate(`/${name}/blob/${path.split("/").map(encodeURIComponent).join("/")}`)} />}
-        {tab === "file" && <FilePreview name={name} path={filePath} onBack={() => navigate(`/${name}`)} />}
+        {tab === "code" && <CodeBrowser name={name} user={user} onCreate={() => navigate(`/${name}/new`)} onOpenFile={(path, ref) => navigate(`/${name}/blob/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`)} />}
+        {tab === "file" && <FilePreview name={name} path={filePath} refName={fileRef} user={user} onBack={() => navigate(`/${name}`)} />}
+        {tab === "file-new" && <FilePreview name={name} path="" refName={fileRef} user={user} onBack={() => navigate(`/${name}`)} />}
         {tab === "commits" && <RepositoryList name={name} kind="commits" />}
         {tab === "branches" && <RepositoryList name={name} kind="branches" />}
         {tab === "tags" && <RepositoryList name={name} kind="tags" />}
@@ -267,10 +269,11 @@ function RepositoryView({
   )
 }
 
-function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: string) => void }) {
+function CodeBrowser({ name, user, onOpenFile, onCreate }: { name: string; user: User | null; onOpenFile: (path: string, ref: string) => void; onCreate: () => void }) {
   const [directory, setDirectory] = useState("")
   const [entries, setEntries] = useState<TreeEntry[]>([])
   const [branches, setBranches] = useState<GitRef[]>([])
+  const [tags, setTags] = useState<GitRef[]>([])
   const [commits, setCommits] = useState<Commit[]>([])
   const [settings, setSettings] = useState<RepositorySettings | null>(null)
   const [releases, setReleases] = useState<Release[]>([])
@@ -281,6 +284,7 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
   const [branchMenuOpen, setBranchMenuOpen] = useState(false)
   const [codeMenuOpen, setCodeMenuOpen] = useState(false)
   const [branchQuery, setBranchQuery] = useState("")
+  const [refTab, setRefTab] = useState<"branches" | "tags">("branches")
   const [message, setMessage] = useState("")
   useEffect(() => {
     void api<TreeEntry[]>(
@@ -300,12 +304,13 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
   useEffect(() => {
     void Promise.all([
       api<GitRef[]>(`/api/repos/${name}/branches`),
+      api<GitRef[]>(`/api/repos/${name}/tags`),
       api<Commit[]>(`/api/repos/${name}/commits?ref=${encodeURIComponent(ref)}`),
       api<RepositorySettings>(`/api/repos/${name}/settings`),
       api<Release[]>(`/api/repos/${name}/releases`),
       api<Contributor[]>(`/api/repos/${name}/contributors`),
-    ]).then(([nextBranches, nextCommits, nextSettings, nextReleases, nextContributors]) => {
-      setBranches(nextBranches); setCommits(nextCommits); setSettings(nextSettings); setReleases(nextReleases); setContributors(nextContributors)
+    ]).then(([nextBranches, nextTags, nextCommits, nextSettings, nextReleases, nextContributors]) => {
+      setBranches(nextBranches); setTags(nextTags); setCommits(nextCommits); setSettings(nextSettings); setReleases(nextReleases); setContributors(nextContributors)
       if (ref === "HEAD" && nextBranches[0]) setRef(nextBranches.some((branch) => branch.name === nextSettings.defaultBranch) ? nextSettings.defaultBranch : nextBranches[0].name)
     }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载仓库概览。"))
   }, [name, ref])
@@ -314,7 +319,7 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
       setDirectory(entry.path)
       return
     }
-    onOpenFile(entry.path)
+    onOpenFile(entry.path, ref)
   }
   const crumbs = directory ? directory.split("/") : []
   const visibleEntries = entries.filter((entry) => entry.name.toLowerCase().includes(filter.trim().toLowerCase()))
@@ -325,12 +330,12 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
         <div className="relative mb-4 flex flex-wrap items-center gap-2">
           <div className="relative">
             <Button variant="outline" size="sm" aria-expanded={branchMenuOpen} onPress={() => { setBranchMenuOpen(!branchMenuOpen); setCodeMenuOpen(false) }}><GitBranch /> {ref === "HEAD" ? "默认分支" : ref}<ChevronDown /></Button>
-            {branchMenuOpen && <div className="absolute left-0 top-10 z-20 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 text-zinc-100 shadow-2xl"><div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3"><strong>切换分支或标签</strong><button onClick={() => setBranchMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><label className="m-3 flex h-9 items-center gap-2 rounded-lg border border-zinc-700 px-2.5 text-zinc-400"><Search className="size-4" /><input value={branchQuery} onChange={(event) => setBranchQuery(event.target.value)} placeholder="查找或创建分支..." className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-zinc-500" /></label><div className="flex border-y border-zinc-800"><span className="border-b-2 border-emerald-400 px-4 py-2 text-sm font-medium">分支</span><span className="px-4 py-2 text-sm text-zinc-400">标签</span></div><div className="max-h-52 overflow-auto p-2">{branches.filter((branch) => branch.name.toLowerCase().includes(branchQuery.toLowerCase())).map((branch) => <button key={branch.name} onClick={() => { setRef(branch.name); setDirectory(""); setBranchMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-900"><Check className={`size-4 ${ref === branch.name ? "text-emerald-400" : "text-transparent"}`} />{branch.name}{branch.name === settings?.defaultBranch && <span className="ml-auto rounded-full border border-zinc-600 px-2 py-0.5 text-xs text-zinc-300">默认</span>}</button>)}{!branches.length && <p className="px-3 py-4 text-sm text-zinc-500">暂无分支</p>}</div><button onClick={() => setBranchMenuOpen(false)} className="w-full border-t border-zinc-800 px-4 py-3 text-left text-sm text-sky-400 hover:bg-zinc-900">查看所有分支</button></div>}
+            {branchMenuOpen && <div className="absolute left-0 top-10 z-20 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 text-zinc-100 shadow-2xl"><div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3"><strong>切换分支或标签</strong><button onClick={() => setBranchMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><label className="m-3 flex h-9 items-center gap-2 rounded-lg border border-zinc-700 px-2.5 text-zinc-400"><Search className="size-4" /><input value={branchQuery} onChange={(event) => setBranchQuery(event.target.value)} placeholder={refTab === "branches" ? "查找分支..." : "查找标签..."} className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-zinc-500" /></label><div className="flex border-y border-zinc-800"><button onClick={() => setRefTab("branches")} className={`px-4 py-2 text-sm ${refTab === "branches" ? "border-b-2 border-emerald-400 font-medium" : "text-zinc-400"}`}>分支</button><button onClick={() => setRefTab("tags")} className={`px-4 py-2 text-sm ${refTab === "tags" ? "border-b-2 border-emerald-400 font-medium" : "text-zinc-400"}`}>标签</button></div><div className="max-h-52 overflow-auto p-2">{(refTab === "branches" ? branches : tags).filter((item) => item.name.toLowerCase().includes(branchQuery.toLowerCase())).map((item) => <button key={item.name} onClick={() => { setRef(item.name); setDirectory(""); setBranchMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-900"><Check className={`size-4 ${ref === item.name ? "text-emerald-400" : "text-transparent"}`} />{item.name}{refTab === "branches" && item.name === settings?.defaultBranch && <span className="ml-auto rounded-full border border-zinc-600 px-2 py-0.5 text-xs text-zinc-300">默认</span>}</button>)}{!(refTab === "branches" ? branches : tags).length && <p className="px-3 py-4 text-sm text-zinc-500">暂无{refTab === "branches" ? "分支" : "标签"}</p>}</div></div>}
           </div>
           <button className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"><GitBranch className="size-4" />{branches.length} 个分支</button>
           <button className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"><Tag className="size-4" />{releases.length} 个发布</button>
           <label className="ml-auto flex h-9 min-w-48 flex-1 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 text-zinc-400 shadow-sm sm:max-w-72 dark:border-zinc-700 dark:bg-zinc-900"><ListFilter className="size-4" /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="转到文件" className="w-full bg-transparent text-sm text-zinc-900 outline-none dark:text-zinc-100" /></label>
-          <div className="relative"><Button variant="outline" size="sm" aria-expanded={codeMenuOpen} onPress={() => { setCodeMenuOpen(!codeMenuOpen); setBranchMenuOpen(false) }}><Code2 />{copied ? "已复制" : "代码"}<ChevronDown /></Button>{codeMenuOpen && <div className="absolute right-0 top-10 z-20 w-80 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-zinc-100 shadow-2xl"><div className="mb-3 flex items-center justify-between"><strong>克隆仓库</strong><button onClick={() => setCodeMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><div className="mb-3 flex gap-1 rounded-lg border border-zinc-700 p-1 text-sm"><span className="rounded-md bg-zinc-700 px-3 py-1.5 font-medium">HTTPS</span><span className="px-3 py-1.5 text-zinc-400">SSH</span></div><div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-2"><code className="min-w-0 flex-1 truncate text-xs text-zinc-300">{window.location.origin}/{name}.git</code><button onClick={() => { void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`); setCopied(true) }} aria-label="复制克隆地址"><Copy className="size-4 text-zinc-400" /></button></div><p className="mt-3 text-xs text-zinc-500">使用网页地址克隆此仓库。</p><div className="mt-4 space-y-1 border-t border-zinc-800 pt-3 text-sm"><button className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><GitBranch className="size-4" />在桌面客户端中打开</button><button className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><FolderGit2 className="size-4" />下载 ZIP</button></div></div>}</div>
+          {user && <Button variant="outline" size="sm" onPress={onCreate}><Plus />添加文件</Button>}<div className="relative"><Button variant="outline" size="sm" aria-expanded={codeMenuOpen} onPress={() => { setCodeMenuOpen(!codeMenuOpen); setBranchMenuOpen(false) }}><Code2 />{copied ? "已复制" : "代码"}<ChevronDown /></Button>{codeMenuOpen && <div className="absolute right-0 top-10 z-20 w-80 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-zinc-100 shadow-2xl"><div className="mb-3 flex items-center justify-between"><strong>克隆仓库</strong><button onClick={() => setCodeMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><div className="mb-3 flex gap-1 rounded-lg border border-zinc-700 p-1 text-sm"><span className="rounded-md bg-zinc-700 px-3 py-1.5 font-medium">HTTPS</span><span className="px-3 py-1.5 text-zinc-400">SSH</span></div><div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-2"><code className="min-w-0 flex-1 truncate text-xs text-zinc-300">{window.location.origin}/{name}.git</code><button onClick={() => { void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`); setCopied(true) }} aria-label="复制克隆地址"><Copy className="size-4 text-zinc-400" /></button></div><p className="mt-3 text-xs text-zinc-500">使用网页地址克隆此仓库。</p><div className="mt-4 space-y-1 border-t border-zinc-800 pt-3 text-sm"><button onClick={() => { window.location.href = `/api/repos/${name}/archive?ref=${encodeURIComponent(ref)}` }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><FolderGit2 className="size-4" />下载 ZIP</button></div></div>}</div>
         </div>
         {message && <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50">{message}</p>}
         <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -339,17 +344,22 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
           {visibleEntries.length ? visibleEntries.map((entry) => <button key={entry.path} onClick={() => openEntry(entry)} className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"><span className={`grid size-5 place-items-center ${entry.type === "tree" ? "text-amber-600" : "text-zinc-500"}`}>{entry.type === "tree" ? <FolderGit2 className="size-4" /> : <FileCode2 className="size-4" />}</span><span className="font-medium text-sky-700 dark:text-sky-300">{entry.name}</span><span className="ml-auto text-xs text-zinc-400">{entry.type === "tree" ? "目录" : "文件"}</span></button>) : <Empty icon={<FolderGit2 />} title="此分支暂无文件" text="推送一次提交后即可在这里浏览源代码。" />}
         </div>
       </div>
-      <aside className="border-t border-zinc-200 pt-5 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6 xl:pt-0"><h2 className="font-semibold">关于</h2><p className="mt-3 text-sm leading-6 text-zinc-500">{settings?.description || "暂无项目简介、网站或主题。"}</p>{settings?.topics.length ? <div className="mt-4 flex flex-wrap gap-1.5">{settings.topics.map((topic) => <span key={topic} className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">{topic}</span>)}</div> : null}<div className="mt-5 space-y-3 border-b border-zinc-200 pb-5 text-sm dark:border-zinc-800"><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><GitCommitHorizontal className="size-4" />{commits.length} 次近期提交</p><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><Users className="size-4" />{contributors.length} 位贡献者</p></div>{releases.length ? <div className="pt-5"><h3 className="font-semibold">发布版本</h3>{releases.slice(0, 2).map((release) => <div key={release.id} className="mt-3"><p className="flex items-center gap-1 text-sm font-medium text-emerald-700 dark:text-emerald-300"><Tag className="size-3.5" />{release.tagName}</p><p className="mt-1 text-xs text-zinc-500">{release.title}</p></div>)}</div> : null}</aside>
+      <aside className="border-t border-zinc-200 pt-5 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6 xl:pt-0"><h2 className="font-semibold">关于</h2><p className="mt-3 text-sm leading-6 text-zinc-500">{settings?.description || "暂无项目简介、网站或主题。"}</p>{settings?.topics.length ? <div className="mt-4 flex flex-wrap gap-1.5">{settings.topics.map((topic) => <span key={topic} className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">{topic}</span>)}</div> : null}<div className="mt-5 space-y-3 border-b border-zinc-200 pb-5 text-sm dark:border-zinc-800"><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><GitCommitHorizontal className="size-4" />{commits.length} 次近期提交</p><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><Users className="size-4" />{contributors.length} 位贡献者</p></div>{releases.length ? <div className="pt-5"><h3 className="font-semibold">最新发布</h3>{releases.slice(0, 2).map((release) => <a href={`/${name}/releases`} key={release.id} className="mt-3 block"><p className="flex items-center gap-1 text-sm font-medium text-emerald-700 dark:text-emerald-300"><Tag className="size-3.5" />{release.tagName}</p><p className="mt-1 text-xs text-zinc-500">{release.title}</p></a>)}</div> : null}{contributors.length ? <div className="border-t border-zinc-200 pt-5 dark:border-zinc-800"><h3 className="font-semibold">贡献者</h3>{contributors.slice(0,5).map((item)=><a href={`/${item.username}`} key={item.username} className="mt-3 flex items-center gap-2 text-sm hover:text-sky-600"><Avatar name={item.username}/><span className="min-w-0 flex-1 truncate">{item.username}</span><span className="text-xs text-zinc-500">{item.contributions}</span></a>)}</div> : null}</aside>
     </div>
   )
 }
 
-function FilePreview({ name, path, onBack }: { name: string; path: string; onBack: () => void }) {
+function FilePreview({ name, path, refName, user, onBack }: { name: string; path: string; refName: string; user: User | null; onBack: () => void }) {
   const [file, setFile] = useState<Blob | null>(null)
   const [message, setMessage] = useState("")
-  useEffect(() => { void api<Blob>(`/api/repos/${name}/blob?path=${encodeURIComponent(path)}`).then(setFile).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法读取文件。")) }, [name, path])
-  if (!file && !message) return <Loading />
-  return <div className="mx-auto max-w-6xl"><button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />返回文件列表</button><div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><FileCode2 className="size-4 text-zinc-500" /><span className="font-medium">{path}</span></header>{message ? <p className="p-4 text-sm text-red-600">{message}</p> : file?.isText ? <pre className="max-h-[calc(100svh-15rem)] overflow-auto bg-zinc-950 p-5 text-xs leading-6 text-zinc-100"><code>{file.content}</code></pre> : <div className="grid min-h-64 place-items-center p-6 text-sm text-zinc-500">暂不支持预览二进制文件。</div>}</div></div>
+  const [editing, setEditing] = useState(path === "")
+  const [filePath, setFilePath] = useState(path)
+  const [content, setContent] = useState("")
+  const [commitMessage, setCommitMessage] = useState("")
+  useEffect(() => { if (!path) return; void api<Blob>(`/api/repos/${name}/blob?ref=${encodeURIComponent(refName)}&path=${encodeURIComponent(path)}`).then((value)=>{setFile(value);setContent(value.content)}).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法读取文件。")) }, [name, path, refName])
+  if (path && !file && !message) return <Loading />
+  const save = async () => { try { await api(`/api/repos/${name}/blob`, { method:"PUT", body:JSON.stringify({path:filePath,content,branch:refName,message:commitMessage}) }); onBack() } catch(cause) { setMessage(cause instanceof Error?cause.message:"无法保存文件。") } }
+  return <div className="mx-auto max-w-6xl"><button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />返回文件列表</button><div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><FileCode2 className="size-4 text-zinc-500" />{editing&& !path?<input value={filePath} onChange={(event)=>setFilePath(event.target.value)} placeholder="文件路径，例如 README.md" className="h-8 flex-1 rounded border border-zinc-300 bg-white px-2 outline-none dark:border-zinc-700 dark:bg-zinc-900"/>:<span className="font-medium">{path}</span>}<span className="ml-auto text-xs text-zinc-500">{refName}</span>{user&&file?.isText&&<Button size="sm" variant="outline" onPress={()=>setEditing(!editing)}>{editing?"取消编辑":"编辑文件"}</Button>}</header>{message ? <p className="p-4 text-sm text-red-600">{message}</p> : editing ? <div className="p-4"><textarea value={content} onChange={(event)=>setContent(event.target.value)} className="min-h-[24rem] w-full rounded-md border border-zinc-300 bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-100 outline-none dark:border-zinc-700"/><input value={commitMessage} onChange={(event)=>setCommitMessage(event.target.value)} placeholder="提交说明（可选）" className="mt-3 h-9 w-full rounded-md border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700"/>{user?<div className="mt-3 flex justify-end"><Button onPress={save}>提交更改</Button></div>:<p className="mt-3 text-sm text-zinc-500">登录后可编辑文件。</p>}</div> : file?.isText ? <pre className="max-h-[calc(100svh-15rem)] overflow-auto bg-zinc-950 p-5 text-xs leading-6 text-zinc-100"><code>{file.content}</code></pre> : <div className="grid min-h-64 place-items-center p-6 text-sm text-zinc-500">暂不支持预览二进制文件。</div>}</div></div>
 }
 
 function RepositoryList({
@@ -361,6 +371,7 @@ function RepositoryList({
 }) {
   const [items, setItems] = useState<(Commit | GitRef)[]>([])
   const [message, setMessage] = useState("")
+  const [detail, setDetail] = useState<CommitDetail | null>(null)
   useEffect(() => {
     void api<(Commit | GitRef)[]>(`/api/repos/${name}/${kind}`)
       .then(setItems)
@@ -379,15 +390,15 @@ function RepositoryList({
       {items.length ? (
         items.map((item) =>
           "subject" in item ? (
-            <div
+            <button onClick={() => { void api<CommitDetail>(`/api/repos/${name}/commits/${item.hash}`).then(setDetail).catch((cause:unknown)=>setMessage(cause instanceof Error?cause.message:"无法读取提交详情。")) }}
               key={item.hash}
-              className="border-b border-zinc-100 px-5 py-4 last:border-0 dark:border-zinc-800"
+              className="block w-full border-b border-zinc-100 px-5 py-4 text-left last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
             >
               <p className="font-medium">{item.subject}</p>
               <p className="mt-1 text-sm text-zinc-500">
                 {item.author} · {when(item.date)} · <code>{item.hash}</code>
               </p>
-            </div>
+            </button>
           ) : (
             <div
               key={item.name}
@@ -405,7 +416,7 @@ function RepositoryList({
           text="推送提交后将在此显示。"
         />
       )}
-    </div>
+    {detail && <Modal title="提交详情" onClose={() => setDetail(null)}><p className="font-mono text-xs text-zinc-500">{detail.hash}</p><h3 className="mt-3 font-semibold">{detail.subject}</h3><p className="mt-2 text-sm text-zinc-500">{detail.author} · {when(detail.date)}</p>{detail.body && <pre className="mt-4 whitespace-pre-wrap rounded-md bg-zinc-950 p-3 text-xs text-zinc-100">{detail.body}</pre>}{detail.changes && <pre className="mt-4 max-h-60 overflow-auto whitespace-pre-wrap rounded-md bg-zinc-950 p-3 text-xs text-zinc-100">{detail.changes}</pre>}</Modal>}</div>
   )
 }
 

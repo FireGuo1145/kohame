@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react"
-import { Bell, ChevronLeft, ChevronRight, FolderGit2, GitBranch, House, LogOut, PanelLeftClose, PanelLeftOpen, Search, Settings, User as UserIcon } from "lucide-react"
+import { Bell, Building2, ChevronLeft, ChevronRight, FolderGit2, GitBranch, House, LogOut, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, User as UserIcon } from "lucide-react"
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom"
 
 import { Button } from "@/components/ui/button"
@@ -16,6 +16,7 @@ import SetupPage, { AuthMenu } from "@/pages/SetupPage"
 import VerifyRoutePage from "@/pages/VerifyRoutePage"
 import WorkPage from "@/pages/WorkPage"
 import { AccountSettingsPage } from "@/pages/AccountSettingsPage"
+import { CreateOrganizationPage, CreateRepositoryPage } from "@/pages/CreatePage"
 
 export default function App() {
   const location = useLocation()
@@ -59,11 +60,8 @@ export default function App() {
   const dashboard = (
     <HomePage
       site={site}
-      user={user}
       repos={repos}
-      onRepos={setRepos}
       onOpen={openRepo}
-      onOrganization={(name) => navigate(`/orgs/${name}`)}
     />
   )
 
@@ -84,7 +82,7 @@ export default function App() {
   }
 
   const isActive = (path: string) => path === "/" ? location.pathname === "/" : location.pathname.startsWith(path)
-  const pageName = location.pathname === "/" ? "探索" : location.pathname.startsWith("/work") ? "工作台" : location.pathname.startsWith("/notifications") ? "通知" : location.pathname.startsWith("/settings") ? "站点设置" : location.pathname.startsWith("/account") ? "个人设置" : "仓库"
+  const pageName = location.pathname === "/" ? "探索" : location.pathname.startsWith("/work") ? "工作台" : location.pathname.startsWith("/notifications") ? "通知" : location.pathname.startsWith("/settings") ? "站点设置" : location.pathname.startsWith("/account") ? "个人设置" : location.pathname.startsWith("/new") ? "创建" : "仓库"
 
   return (
     <main className="min-h-svh bg-[#f7f7f4] text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
@@ -120,6 +118,7 @@ export default function App() {
                 <label className="flex h-8 w-64 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2.5 text-zinc-400 shadow-sm focus-within:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"><Search className="size-3.5" /><input name="q" defaultValue={location.pathname === "/search" ? new URLSearchParams(location.search).get("q") || "" : ""} placeholder="搜索仓库、用户..." className="w-full bg-transparent text-sm text-zinc-800 outline-none placeholder:text-zinc-400 dark:text-zinc-100" /></label>
               </form>
               <div className="flex items-center gap-1">
+                {user && <><Button variant="ghost" size="icon" aria-label="创建仓库" onPress={() => navigate("/new/repository")}><Plus /></Button><Button variant="ghost" size="icon" aria-label="创建组织" onPress={() => navigate("/new/organization")}><Building2 /></Button></>}
                 {user?.isAdmin && <Button variant="ghost" size="icon" aria-label="站点设置" onPress={() => navigate("/settings")}><Settings /></Button>}
                 {user ? <>
                   <Button variant="ghost" size="icon" aria-label="通知" onPress={() => navigate("/notifications")}><Bell /></Button>
@@ -136,7 +135,9 @@ export default function App() {
         <Route path="/verify" element={<VerifyRoutePage onDone={() => { void refresh(); openHome() }} />} />
         <Route path="/search" element={<SearchPage initialQuery={new URLSearchParams(location.search).get("q") || ""} onOpen={openRepo} onProfile={(username) => navigate(`/${username}`)} />} />
         <Route path="/account" element={<AccountSettingsPage user={user} />} />
-        <Route path="/orgs/:name" element={<OrganizationRoutePage onOpen={openRepo} />} />
+        <Route path="/new/repository" element={<CreateRepositoryPage user={user} onCreated={openRepo} />} />
+        <Route path="/new/organization" element={<CreateOrganizationPage user={user} onCreated={(name) => navigate(`/orgs/${name}`)} />} />
+        <Route path="/orgs/:name" element={<OrganizationRoutePage user={user} onOpen={openRepo} />} />
         <Route path="/:scope/:name/*" element={<RepositoryRoutePage user={user} onBack={openHome} onOpen={openRepo} />} />
         <Route path="/:username" element={<ProfileRoutePage user={user} onOpen={openRepo} />} />
         <Route path="*" element={dashboard} />

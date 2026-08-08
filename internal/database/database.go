@@ -50,7 +50,9 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS repository_stars (repository_name VARCHAR(161) NOT NULL, user_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (repository_name, user_id))`,
 		`CREATE TABLE IF NOT EXISTS email_verifications (token_hash VARCHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, expires_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS notifications (id ` + idColumn + `, user_id BIGINT NOT NULL, kind VARCHAR(32) NOT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, link VARCHAR(255) NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMP NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, display_name VARCHAR(80) NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '', location VARCHAR(120) NOT NULL DEFAULT '', website VARCHAR(255) NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, display_name VARCHAR(80) NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '', location VARCHAR(120) NOT NULL DEFAULT '', website VARCHAR(255) NOT NULL DEFAULT '', avatar_url VARCHAR(255) NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS user_follows (follower_id BIGINT NOT NULL, target_user_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (follower_id, target_user_id))`,
+		`CREATE TABLE IF NOT EXISTS organization_follows (follower_id BIGINT NOT NULL, organization_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (follower_id, organization_id))`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -64,11 +66,15 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate users: %w", err)
 	}
+	if _, err := db.Exec(`ALTER TABLE user_settings ADD COLUMN avatar_url VARCHAR(255) NOT NULL DEFAULT ''`); err != nil && !isDuplicateColumn(err) {
+		db.Close()
+		return nil, fmt.Errorf("migrate user settings: %w", err)
+	}
 	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_title', 'Kohame') ON CONFLICT (key) DO NOTHING`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
-	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_description', 'Self-hosted Git, kept simple') ON CONFLICT (key) DO NOTHING`); err != nil {
+	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_description', '简洁自托管的 Git 代码协作平台') ON CONFLICT (key) DO NOTHING`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
@@ -76,7 +82,7 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
-	for key, value := range map[string]string{"repository_root": "data/repos", "captcha_enabled": "false", "captcha_site_key": "", "captcha_secret": ""} {
+	for key, value := range map[string]string{"repository_root": "data/repos", "captcha_enabled": "false", "captcha_site_key": "", "captcha_secret": "", "gravatar_mirror": "https://www.gravatar.com/avatar/"} {
 		seed := `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING`
 		if cfg.Driver == "pgsql" {
 			seed = `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`

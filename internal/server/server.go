@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -27,9 +28,10 @@ import (
 )
 
 type Server struct {
-	repos   *repository.Store
-	forge   *forge.Store
-	captcha config.CaptchaConfig
+	repos     *repository.Store
+	forge     *forge.Store
+	captcha   config.CaptchaConfig
+	avatarDir string
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -47,7 +49,12 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	captcha := config.CaptchaConfig{Enabled: settings.CaptchaEnabled, SiteKey: settings.CaptchaSiteKey, Secret: settings.CaptchaSecret}
-	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forgeStore, captcha: captcha}, nil
+	avatarDir := filepath.Join(filepath.Dir(cfg.Storage.RepositoryRoot), "avatars")
+	if err := os.MkdirAll(avatarDir, 0o755); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forgeStore, captcha: captcha, avatarDir: avatarDir}, nil
 }
 
 func (s *Server) Close() error { return s.repos.Close() }
@@ -68,13 +75,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.me)
 	mux.HandleFunc("GET /api/user/settings", s.personalSettings)
 	mux.HandleFunc("PATCH /api/user/settings", s.updatePersonalSettings)
+	mux.HandleFunc("POST /api/user/avatar", s.uploadAvatar)
 	mux.HandleFunc("GET /api/scopes", s.scopes)
 	mux.HandleFunc("POST /api/organizations", s.createOrganization)
 	mux.HandleFunc("GET /api/organizations/{name}", s.organization)
 	mux.HandleFunc("GET /api/organizations/{name}/members", s.organizationMembers)
 	mux.HandleFunc("GET /api/organizations/{name}/repos", s.organizationRepos)
+	mux.HandleFunc("POST /api/organizations/{name}/follow", s.followOrganization)
 	mux.HandleFunc("GET /api/users/{username}", s.userProfile)
 	mux.HandleFunc("GET /api/users/{username}/repos", s.userRepos)
+	mux.HandleFunc("POST /api/users/{username}/follow", s.followUser)
 	mux.HandleFunc("GET /api/notifications", s.notifications)
 	mux.HandleFunc("PATCH /api/notifications/{id}/read", s.readNotification)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
@@ -86,9 +96,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/branches", s.branches)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tags", s.tags)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits", s.commits)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits/{hash}", s.commit)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/settings", s.repositorySettings)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/settings", s.updateRepositorySettings)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/blob", s.writeFile)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/archive", s.archive)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues/{id}", s.issue)
@@ -105,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/releases/{id}", s.deleteRelease)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/contributors", s.contributors)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}", s.getRepo)
+	mux.Handle("GET /uploads/avatars/", http.StripPrefix("/uploads/avatars/", http.FileServer(http.Dir(s.avatarDir))))
 	mux.HandleFunc("/{scope}/{rest...}", s.gitHTTPDirect)
 	mux.Handle("/", spa())
 	return securityHeaders(mux)
@@ -349,6 +363,44 @@ func (s *Server) updatePersonalSettings(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, 200, value)
 }
+func (s *Server) uploadAvatar(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseMultipartForm(2 << 20); err != nil {
+		writeError(w, 400, "头像文件过大。 ")
+		return
+	}
+	file, _, err := r.FormFile("avatar")
+	if err != nil {
+		writeError(w, 400, "请选择头像文件。 ")
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, 2<<20))
+	if err != nil {
+		writeError(w, 400, "无法读取头像文件。 ")
+		return
+	}
+	kind := http.DetectContentType(content)
+	ext := map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}[kind]
+	if ext == "" {
+		writeError(w, 400, "头像仅支持 JPG、PNG、GIF 或 WebP。 ")
+		return
+	}
+	filename := fmt.Sprintf("%s-%d%s", user.Username, time.Now().UnixNano(), ext)
+	if err := os.WriteFile(filepath.Join(s.avatarDir, filename), content, 0o644); err != nil {
+		writeError(w, 500, "无法保存头像。 ")
+		return
+	}
+	value, err := s.forge.SetAvatar(r.Context(), user, "/uploads/avatars/"+filename)
+	if err != nil {
+		writeError(w, 500, "无法更新头像。 ")
+		return
+	}
+	writeJSON(w, 200, value)
+}
 func (s *Server) scopes(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
@@ -393,7 +445,26 @@ func (s *Server) organization(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "Could not load organization.")
 		return
 	}
+	if user, err := s.currentUser(r); err == nil {
+		org.Followed, _ = s.forge.OrganizationFollowed(r.Context(), user.ID, org.Name)
+	}
 	writeJSON(w, 200, org)
+}
+func (s *Server) followOrganization(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	followed, followers, err := s.forge.ToggleOrganizationFollow(r.Context(), user, r.PathValue("name"))
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "未找到组织。 ")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"followed": followed, "followers": followers})
 }
 func (s *Server) organizationMembers(w http.ResponseWriter, r *http.Request) {
 	items, err := s.forge.OrganizationMembers(r.Context(), r.PathValue("name"))
@@ -421,7 +492,26 @@ func (s *Server) userProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "Could not load user.")
 		return
 	}
+	if user, err := s.currentUser(r); err == nil {
+		value.Followed, _ = s.forge.UserFollowed(r.Context(), user.ID, value.Username)
+	}
 	writeJSON(w, 200, value)
+}
+func (s *Server) followUser(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	followed, followers, err := s.forge.ToggleUserFollow(r.Context(), user, r.PathValue("username"))
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "未找到用户。 ")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"followed": followed, "followers": followers})
 }
 func (s *Server) userRepos(w http.ResponseWriter, r *http.Request) {
 	items, err := s.repos.ListByScope(r.PathValue("username"))
@@ -865,6 +955,60 @@ func (s *Server) contributors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, items)
 }
 
+func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	content, err := s.repos.Archive(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "未找到可下载的提交。")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "无法生成 ZIP 文件。 ")
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+repo.Name+`.zip"`)
+	w.WriteHeader(200)
+	_, _ = w.Write(content)
+}
+func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	allowed, err := s.forge.CanUseScope(r.Context(), user, repo.Scope)
+	if err != nil || !allowed {
+		writeError(w, 403, "无权修改此仓库。")
+		return
+	}
+	var input struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Branch  string `json:"branch"`
+		Message string `json:"message"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	commit, err := s.repos.WriteFile(r.Context(), repo, valueOr(input.Branch, "main"), input.Path, input.Content, user.Username, user.Email, input.Message)
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 400, "文件路径或分支无效。 ")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "无法创建文件提交："+err.Error())
+		return
+	}
+	writeJSON(w, 201, commit)
+}
+
 func (s *Server) tree(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.requireRepo(w, r)
 	if !ok {
@@ -933,6 +1077,22 @@ func (s *Server) commits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.repos.Commit(r.Context(), repo, r.PathValue("hash"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "未找到提交记录。")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "无法读取提交详情。")
+		return
+	}
+	writeJSON(w, 200, item)
 }
 func (s *Server) repositorySettings(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {

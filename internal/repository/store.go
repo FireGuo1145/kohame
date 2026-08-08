@@ -54,6 +54,11 @@ type Commit struct {
 	Author  string `json:"author"`
 	Date    string `json:"date"`
 }
+type CommitDetail struct {
+	Commit
+	Body    string `json:"body"`
+	Changes string `json:"changes"`
+}
 
 type Store struct {
 	root   string
@@ -273,6 +278,86 @@ func (s *Store) Commits(ctx context.Context, repo Repository, ref string) ([]Com
 		}
 	}
 	return items, nil
+}
+func (s *Store) Commit(ctx context.Context, repo Repository, hash string) (CommitDetail, error) {
+	if !safeRef(hash) {
+		return CommitDetail{}, ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "show", "--format=%H|%s|%an|%aI%n%B%n---CHANGES---", "--stat", hash).Output()
+	if err != nil {
+		return CommitDetail{}, ErrNotFound
+	}
+	parts := strings.SplitN(string(output), "\n", 2)
+	fields := strings.SplitN(parts[0], "|", 4)
+	if len(fields) != 4 {
+		return CommitDetail{}, ErrNotFound
+	}
+	body, changes := "", ""
+	if len(parts) == 2 {
+		segments := strings.SplitN(parts[1], "---CHANGES---\n", 2)
+		body = strings.TrimSpace(segments[0])
+		if len(segments) == 2 {
+			changes = strings.TrimSpace(segments[1])
+		}
+	}
+	return CommitDetail{Commit: Commit{Hash: fields[0], Subject: fields[1], Author: fields[2], Date: fields[3]}, Body: body, Changes: changes}, nil
+}
+func (s *Store) Archive(ctx context.Context, repo Repository, ref string) ([]byte, error) {
+	if !safeRef(ref) {
+		return nil, ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "archive", "--format=zip", "--prefix="+repo.Name+"/", ref).Output()
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return output, nil
+}
+func (s *Store) WriteFile(ctx context.Context, repo Repository, branch, filePath, content, author, email, message string) (Commit, error) {
+	if !safeRef(branch) || !safeGitPath(filePath) || filePath == "" || len(content) > 1<<20 {
+		return Commit{}, ErrNotFound
+	}
+	work, err := os.MkdirTemp("", "kohame-work-")
+	if err != nil {
+		return Commit{}, err
+	}
+	defer os.RemoveAll(work)
+	if output, err := exec.CommandContext(ctx, "git", "clone", repo.Path, work).CombinedOutput(); err != nil {
+		return Commit{}, fmt.Errorf("clone repository: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if _, err := exec.CommandContext(ctx, "git", "-C", work, "checkout", "-B", branch).CombinedOutput(); err != nil {
+		return Commit{}, fmt.Errorf("checkout branch: %w", err)
+	}
+	fullPath := filepath.Join(work, filepath.FromSlash(filePath))
+	if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(work)+string(os.PathSeparator)) {
+		return Commit{}, ErrNotFound
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return Commit{}, err
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		return Commit{}, err
+	}
+	for _, args := range [][]string{{"config", "user.name", author}, {"config", "user.email", email}, {"add", "--", filePath}, {"commit", "-m", valueOrMessage(message, "更新 "+filePath)}} {
+		if output, err := exec.CommandContext(ctx, "git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
+			return Commit{}, fmt.Errorf("update file: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, err := exec.CommandContext(ctx, "git", "-C", work, "push", "origin", "HEAD:refs/heads/"+branch).CombinedOutput(); err != nil {
+		return Commit{}, fmt.Errorf("push file: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	_, _ = exec.CommandContext(ctx, "git", "-C", repo.Path, "symbolic-ref", "HEAD", "refs/heads/"+branch).CombinedOutput()
+	items, err := s.Commits(ctx, repo, branch)
+	if err != nil || len(items) == 0 {
+		return Commit{}, err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE repositories SET updated_at=`+s.placeholders(1)+` WHERE name=`+s.placeholders(2), time.Now().UTC(), repo.FullName)
+	return items[0], nil
+}
+func valueOrMessage(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
 }
 func splitTopics(value string) []string {
 	out := []string{}

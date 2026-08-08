@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -46,6 +47,7 @@ type SiteSettings struct {
 	SMTPUsername      string `json:"smtpUsername"`
 	SMTPPassword      string `json:"smtpPassword,omitempty"`
 	SMTPFrom          string `json:"smtpFrom"`
+	GravatarMirror    string `json:"gravatarMirror"`
 }
 type Issue struct {
 	ID        int64     `json:"id"`
@@ -86,8 +88,10 @@ type Contributor struct {
 	Contributions int    `json:"contributions"`
 }
 type Organization struct {
-	Name string `json:"name"`
-	Role string `json:"role"`
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	Followers int    `json:"followers"`
+	Followed  bool   `json:"followed"`
 }
 type OrganizationMember struct {
 	Username string `json:"username"`
@@ -111,6 +115,10 @@ type Profile struct {
 	CreatedAt    time.Time `json:"createdAt"`
 	Repositories int       `json:"repositories"`
 	Stars        int       `json:"stars"`
+	AvatarURL    string    `json:"avatarUrl"`
+	Followers    int       `json:"followers"`
+	Following    int       `json:"following"`
+	Followed     bool      `json:"followed"`
 }
 type PersonalSettings struct {
 	Username    string `json:"username"`
@@ -120,6 +128,7 @@ type PersonalSettings struct {
 	Bio         string `json:"bio"`
 	Location    string `json:"location"`
 	Website     string `json:"website"`
+	AvatarURL   string `json:"avatarUrl"`
 }
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
@@ -221,11 +230,40 @@ func (s *Store) CanUseScope(ctx context.Context, user User, scope string) (bool,
 }
 func (s *Store) Organization(ctx context.Context, name string) (Organization, error) {
 	var org Organization
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM organizations WHERE name=`+s.arg(1), strings.ToLower(strings.TrimSpace(name))).Scan(&org.Name)
+	err := s.db.QueryRowContext(ctx, `SELECT o.name,(SELECT COUNT(*) FROM organization_follows f WHERE f.organization_id=o.id) FROM organizations o WHERE o.name=`+s.arg(1), strings.ToLower(strings.TrimSpace(name))).Scan(&org.Name, &org.Followers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Organization{}, ErrNotFound
 	}
 	return org, err
+}
+
+func (s *Store) ToggleOrganizationFollow(ctx context.Context, user User, name string) (bool, int, error) {
+	var organizationID int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM organizations WHERE name=`+s.arg(1), strings.ToLower(strings.TrimSpace(name))).Scan(&organizationID); err != nil {
+		return false, 0, err
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM organization_follows WHERE follower_id=`+s.arg(1)+` AND organization_id=`+s.arg(2), user.ID, organizationID).Scan(&exists); err != nil {
+		return false, 0, err
+	}
+	followed := exists == 0
+	var err error
+	if followed {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO organization_follows (follower_id,organization_id,created_at) VALUES (`+s.args(1, 2, 3)+`)`, user.ID, organizationID, time.Now().UTC())
+	} else {
+		_, err = s.db.ExecContext(ctx, `DELETE FROM organization_follows WHERE follower_id=`+s.arg(1)+` AND organization_id=`+s.arg(2), user.ID, organizationID)
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	var count int
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM organization_follows WHERE organization_id=`+s.arg(1), organizationID).Scan(&count)
+	return followed, count, err
+}
+func (s *Store) OrganizationFollowed(ctx context.Context, userID int64, name string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM organization_follows f JOIN organizations o ON o.id=f.organization_id WHERE f.follower_id=`+s.arg(1)+` AND o.name=`+s.arg(2), userID, strings.ToLower(strings.TrimSpace(name))).Scan(&count)
+	return count > 0, err
 }
 func (s *Store) OrganizationMembers(ctx context.Context, name string) ([]OrganizationMember, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT u.username,m.role FROM organizations o JOIN organization_members m ON m.organization_id=o.id JOIN users u ON u.id=m.user_id WHERE o.name=`+s.arg(1)+` ORDER BY m.role,u.username`, name)
@@ -357,6 +395,8 @@ func (s *Store) Settings(ctx context.Context) (SiteSettings, error) {
 			settings.SMTPPassword = value
 		case "smtp_from":
 			settings.SMTPFrom = value
+		case "gravatar_mirror":
+			settings.GravatarMirror = value
 		}
 	}
 	return settings, rows.Err()
@@ -365,7 +405,7 @@ func (s *Store) UpdateSettings(ctx context.Context, value SiteSettings) error {
 	if strings.TrimSpace(value.Title) == "" {
 		return fmt.Errorf("site title is required")
 	}
-	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom)}
+	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom), "gravatar_mirror": strings.TrimSpace(value.GravatarMirror)}
 	for key, item := range items {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO settings (key,value) VALUES (`+s.args(1, 2)+`) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, item); err != nil {
 			return err
@@ -636,17 +676,26 @@ func (s *Store) Profile(ctx context.Context, username string) (Profile, error) {
 		return Profile{}, err
 	}
 	p := Profile{Username: user.Username, CreatedAt: user.CreatedAt}
-	_ = s.db.QueryRowContext(ctx, `SELECT display_name,bio,location,website FROM user_settings WHERE user_id=`+s.arg(1), user.ID).Scan(&p.DisplayName, &p.Bio, &p.Location, &p.Website)
+	_ = s.db.QueryRowContext(ctx, `SELECT display_name,bio,location,website,avatar_url FROM user_settings WHERE user_id=`+s.arg(1), user.ID).Scan(&p.DisplayName, &p.Bio, &p.Location, &p.Website, &p.AvatarURL)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repositories WHERE name LIKE `+s.arg(1), user.Username+"/%").Scan(&p.Repositories)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE user_id=`+s.arg(1), user.ID).Scan(&p.Stars)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_follows WHERE target_user_id=`+s.arg(1), user.ID).Scan(&p.Followers)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_follows WHERE follower_id=`+s.arg(1), user.ID).Scan(&p.Following)
+	if p.AvatarURL == "" {
+		p.AvatarURL = s.gravatarURL(ctx, user.Email)
+	}
 	return p, nil
 }
 
 func (s *Store) PersonalSettings(ctx context.Context, user User) (PersonalSettings, error) {
 	value := PersonalSettings{Username: user.Username, Email: user.Email, Verified: user.EmailVerified}
-	err := s.db.QueryRowContext(ctx, `SELECT display_name,bio,location,website FROM user_settings WHERE user_id=`+s.arg(1), user.ID).Scan(&value.DisplayName, &value.Bio, &value.Location, &value.Website)
+	err := s.db.QueryRowContext(ctx, `SELECT display_name,bio,location,website,avatar_url FROM user_settings WHERE user_id=`+s.arg(1), user.ID).Scan(&value.DisplayName, &value.Bio, &value.Location, &value.Website, &value.AvatarURL)
 	if errors.Is(err, sql.ErrNoRows) {
+		value.AvatarURL = s.gravatarURL(ctx, user.Email)
 		return value, nil
+	}
+	if err == nil && value.AvatarURL == "" {
+		value.AvatarURL = s.gravatarURL(ctx, user.Email)
 	}
 	return value, err
 }
@@ -662,12 +711,60 @@ func (s *Store) UpdatePersonalSettings(ctx context.Context, user User, value Per
 	if value.Website != "" && !(strings.HasPrefix(value.Website, "https://") || strings.HasPrefix(value.Website, "http://")) {
 		return PersonalSettings{}, fmt.Errorf("website must start with http:// or https://")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO user_settings (user_id,display_name,bio,location,website) VALUES (`+s.args(1, 2, 3, 4, 5)+`) ON CONFLICT (user_id) DO UPDATE SET display_name=EXCLUDED.display_name,bio=EXCLUDED.bio,location=EXCLUDED.location,website=EXCLUDED.website`, user.ID, value.DisplayName, value.Bio, value.Location, value.Website)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO user_settings (user_id,display_name,bio,location,website,avatar_url) VALUES (`+s.args(1, 2, 3, 4, 5, 6)+`) ON CONFLICT (user_id) DO UPDATE SET display_name=EXCLUDED.display_name,bio=EXCLUDED.bio,location=EXCLUDED.location,website=EXCLUDED.website,avatar_url=EXCLUDED.avatar_url`, user.ID, value.DisplayName, value.Bio, value.Location, value.Website, value.AvatarURL)
 	if err != nil {
 		return PersonalSettings{}, err
 	}
 	value.Username, value.Email, value.Verified = user.Username, user.Email, user.EmailVerified
 	return value, nil
+}
+
+func (s *Store) SetAvatar(ctx context.Context, user User, avatarURL string) (PersonalSettings, error) {
+	value, err := s.PersonalSettings(ctx, user)
+	if err != nil {
+		return PersonalSettings{}, err
+	}
+	value.AvatarURL = avatarURL
+	return s.UpdatePersonalSettings(ctx, user, value)
+}
+func (s *Store) ToggleUserFollow(ctx context.Context, follower User, username string) (bool, int, error) {
+	target, err := s.UserByUsername(ctx, username)
+	if err != nil {
+		return false, 0, err
+	}
+	if target.ID == follower.ID {
+		return false, 0, fmt.Errorf("cannot follow yourself")
+	}
+	var exists int
+	if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_follows WHERE follower_id=`+s.arg(1)+` AND target_user_id=`+s.arg(2), follower.ID, target.ID).Scan(&exists); err != nil {
+		return false, 0, err
+	}
+	followed := exists == 0
+	if followed {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO user_follows (follower_id,target_user_id,created_at) VALUES (`+s.args(1, 2, 3)+`)`, follower.ID, target.ID, time.Now().UTC())
+	} else {
+		_, err = s.db.ExecContext(ctx, `DELETE FROM user_follows WHERE follower_id=`+s.arg(1)+` AND target_user_id=`+s.arg(2), follower.ID, target.ID)
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	var count int
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_follows WHERE target_user_id=`+s.arg(1), target.ID).Scan(&count)
+	return followed, count, err
+}
+func (s *Store) UserFollowed(ctx context.Context, followerID int64, username string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_follows f JOIN users u ON u.id=f.target_user_id WHERE f.follower_id=`+s.arg(1)+` AND u.username=`+s.arg(2), followerID, strings.ToLower(strings.TrimSpace(username))).Scan(&count)
+	return count > 0, err
+}
+func (s *Store) gravatarURL(ctx context.Context, email string) string {
+	settings, err := s.Settings(ctx)
+	mirror := "https://www.gravatar.com/avatar/"
+	if err == nil && strings.TrimSpace(settings.GravatarMirror) != "" {
+		mirror = strings.TrimRight(strings.TrimSpace(settings.GravatarMirror), "/") + "/"
+	}
+	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return mirror + hex.EncodeToString(sum[:]) + "?d=identicon"
 }
 
 func (s *Store) SearchProfiles(ctx context.Context, query string) ([]Profile, error) {
