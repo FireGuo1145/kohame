@@ -6,7 +6,20 @@ export type Blob = { path: string; content: string; isText: boolean }
 export type GitRef = { name: string; hash: string }
 export type Commit = { hash: string; subject: string; author: string; date: string }
 export type CommitDetail = Commit & { body: string; changes: string }
-export type RepositorySettings = { description: string; visibility: "public" | "private"; defaultBranch: string; topics: string[] }
+export type RepositorySettings = {
+  description: string
+  visibility: "public" | "private"
+  defaultBranch: string
+  topics: string[]
+  issuesEnabled: boolean
+  pullsEnabled: boolean
+  releasesEnabled: boolean
+  wikiEnabled: boolean
+  autoCloseIssues: boolean
+  archived: boolean
+}
+export type Collaborator = { username: string; permission: "read" | "write" | "maintain" | "admin" }
+export type ProtectedBranch = { branch: string; requirePullRequest: boolean; requireApprovals: number }
 export type CaptchaConfig = { enabled: boolean; siteKey: string }
 export type Label = { id: number; name: string; color: string; description: string }
 export type Issue = { id: number; title: string; body: string; state: string; author: string; createdAt: string; labels: Label[] }

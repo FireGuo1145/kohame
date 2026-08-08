@@ -45,7 +45,7 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS activities (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, user_id BIGINT NOT NULL, kind VARCHAR(32) NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS organizations (id ` + idColumn + `, name VARCHAR(80) UNIQUE NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS organization_members (organization_id BIGINT NOT NULL, user_id BIGINT NOT NULL, role VARCHAR(16) NOT NULL, PRIMARY KEY (organization_id, user_id))`,
-		`CREATE TABLE IF NOT EXISTS repository_settings (repository_name VARCHAR(161) PRIMARY KEY, description TEXT NOT NULL DEFAULT '', visibility VARCHAR(16) NOT NULL DEFAULT 'private', default_branch VARCHAR(255) NOT NULL DEFAULT 'main', topics TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS repository_settings (repository_name VARCHAR(161) PRIMARY KEY, description TEXT NOT NULL DEFAULT '', visibility VARCHAR(16) NOT NULL DEFAULT 'private', default_branch VARCHAR(255) NOT NULL DEFAULT 'main', topics TEXT NOT NULL DEFAULT '', issues_enabled BOOLEAN NOT NULL DEFAULT TRUE, pulls_enabled BOOLEAN NOT NULL DEFAULT TRUE, releases_enabled BOOLEAN NOT NULL DEFAULT TRUE, wiki_enabled BOOLEAN NOT NULL DEFAULT FALSE, auto_close_issues BOOLEAN NOT NULL DEFAULT FALSE, archived BOOLEAN NOT NULL DEFAULT FALSE)`,
 		`CREATE TABLE IF NOT EXISTS repository_forks (repository_name VARCHAR(161) PRIMARY KEY, parent_name VARCHAR(161) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS repository_stars (repository_name VARCHAR(161) NOT NULL, user_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (repository_name, user_id))`,
 		`CREATE TABLE IF NOT EXISTS email_verifications (token_hash VARCHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, expires_at TIMESTAMP NOT NULL)`,
@@ -57,6 +57,8 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS release_assets (id ` + idColumn + `, release_id BIGINT NOT NULL, file_name VARCHAR(255) NOT NULL, storage_name VARCHAR(255) NOT NULL, size BIGINT NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS labels (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, name VARCHAR(80) NOT NULL, color VARCHAR(7) NOT NULL, description VARCHAR(255) NOT NULL DEFAULT '', UNIQUE(repository_name, name))`,
 		`CREATE TABLE IF NOT EXISTS issue_labels (issue_id BIGINT NOT NULL, label_id BIGINT NOT NULL, PRIMARY KEY(issue_id, label_id))`,
+		`CREATE TABLE IF NOT EXISTS repository_collaborators (repository_name VARCHAR(161) NOT NULL, user_id BIGINT NOT NULL, permission VARCHAR(16) NOT NULL, PRIMARY KEY(repository_name, user_id))`,
+		`CREATE TABLE IF NOT EXISTS protected_branches (repository_name VARCHAR(161) NOT NULL, branch VARCHAR(255) NOT NULL, require_pull_request BOOLEAN NOT NULL DEFAULT TRUE, require_approvals INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(repository_name, branch))`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -73,6 +75,19 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 	if _, err := db.Exec(`ALTER TABLE user_settings ADD COLUMN avatar_url VARCHAR(255) NOT NULL DEFAULT ''`); err != nil && !isDuplicateColumn(err) {
 		db.Close()
 		return nil, fmt.Errorf("migrate user settings: %w", err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE repository_settings ADD COLUMN issues_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE repository_settings ADD COLUMN pulls_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE repository_settings ADD COLUMN releases_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE repository_settings ADD COLUMN wiki_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE repository_settings ADD COLUMN auto_close_issues BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE repository_settings ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE`,
+	} {
+		if _, err := db.Exec(statement); err != nil && !isDuplicateColumn(err) {
+			db.Close()
+			return nil, fmt.Errorf("migrate repository settings: %w", err)
+		}
 	}
 	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_title', 'Kohame') ON CONFLICT (key) DO NOTHING`); err != nil {
 		db.Close()

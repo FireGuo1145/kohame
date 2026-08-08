@@ -507,6 +507,40 @@ func (s *Store) CreateLabel(ctx context.Context, repo, name, color, description 
 	}
 	return Label{ID: id, Name: name, Color: color, Description: strings.TrimSpace(description)}, nil
 }
+func (s *Store) UpdateLabel(ctx context.Context, repo string, id int64, name, color, description string) (Label, error) {
+	name, color, description = strings.TrimSpace(name), strings.TrimSpace(color), strings.TrimSpace(description)
+	if name == "" || len(name) > 80 || len(color) != 7 || color[0] != '#' {
+		return Label{}, fmt.Errorf("label name or color is invalid")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE labels SET name=`+s.arg(1)+`,color=`+s.arg(2)+`,description=`+s.arg(3)+` WHERE id=`+s.arg(4)+` AND repository_name=`+s.arg(5), name, color, description, id, repo)
+	if err != nil {
+		return Label{}, err
+	}
+	count, _ := result.RowsAffected()
+	if count == 0 {
+		return Label{}, ErrNotFound
+	}
+	return Label{ID: id, Name: name, Color: color, Description: description}, nil
+}
+func (s *Store) DeleteLabel(ctx context.Context, repo string, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE label_id=`+s.arg(1), id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM labels WHERE id=`+s.arg(1)+` AND repository_name=`+s.arg(2), id, repo)
+	if err != nil {
+		return err
+	}
+	count, _ := result.RowsAffected()
+	if count == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
 func (s *Store) IssueLabels(ctx context.Context, issueID int64) ([]Label, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT l.id,l.name,l.color,l.description FROM labels l JOIN issue_labels il ON il.label_id=l.id WHERE il.issue_id=`+s.arg(1)+` ORDER BY l.name`, issueID)
 	if err != nil {
@@ -643,6 +677,15 @@ func (s *Store) UpdatePullRequestState(ctx context.Context, repo string, id int6
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) PullRequest(ctx context.Context, repo string, id int64) (PullRequest, error) {
+	var value PullRequest
+	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.body,p.source_branch,p.target_branch,p.state,u.username,p.created_at,p.updated_at FROM pull_requests p JOIN users u ON u.id=p.author_id WHERE p.repository_name=`+s.arg(1)+` AND p.id=`+s.arg(2), repo, id).Scan(&value.ID, &value.Title, &value.Body, &value.SourceBranch, &value.TargetBranch, &value.State, &value.Author, &value.CreatedAt, &value.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PullRequest{}, ErrNotFound
+	}
+	return value, err
 }
 
 func (s *Store) DeletePullRequest(ctx context.Context, repo string, id int64) error {

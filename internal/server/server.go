@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -171,6 +172,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits/{hash}", s.commit)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/settings", s.repositorySettings)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/settings", s.updateRepositorySettings)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/visibility", s.updateRepositoryVisibility)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/collaborators", s.collaborators)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/collaborators/{username}", s.setCollaborator)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/collaborators/{username}", s.removeCollaborator)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/branch-protections", s.protectedBranches)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/branch-protections/{branch}", s.setProtectedBranch)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/branch-protections/{branch}", s.removeProtectedBranch)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/transfer", s.transferRepository)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}", s.deleteRepository)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/blob", s.writeFile)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/archive", s.archive)
@@ -178,6 +188,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/labels", s.labels)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/labels", s.createLabel)
+	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/labels/{id}", s.updateLabel)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/labels/{id}", s.deleteLabel)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/issues/{id}/labels", s.setIssueLabels)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues/{id}", s.issue)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/issues/{id}", s.updateIssue)
@@ -826,8 +838,7 @@ func (s *Server) createLabel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	allowed, err := s.forge.CanUseScope(r.Context(), user, r.PathValue("scope"))
-	if err != nil || !allowed {
+	if !s.canManageRepository(r, user) {
 		writeError(w, 403, "无权管理仓库标签。")
 		return
 	}
@@ -841,6 +852,59 @@ func (s *Server) createLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, item)
+}
+func (s *Server) updateLabel(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理仓库标签。 ")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input forge.Label
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.UpdateLabel(r.Context(), repoKey(r), id, input.Name, input.Color, input.Description)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "未找到标签。")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 200, item)
+	}
+}
+func (s *Server) deleteLabel(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理仓库标签。 ")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeleteLabel(r.Context(), repoKey(r), id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "未找到标签。")
+	} else if err != nil {
+		writeError(w, 500, "无法删除标签。")
+	} else {
+		w.WriteHeader(204)
+	}
 }
 func (s *Server) setIssueLabels(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
@@ -1076,6 +1140,17 @@ func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
+	}
+	if input.State == "merged" {
+		if settings, err := s.repos.Settings(r.Context(), repoKey(r)); err == nil && settings.AutoCloseIssues {
+			if pull, err := s.forge.PullRequest(r.Context(), repoKey(r), id); err == nil {
+				for _, match := range issueCloseReference.FindAllStringSubmatch(pull.Title+"\n"+pull.Body, -1) {
+					if issueID, err := strconv.ParseInt(match[1], 10, 64); err == nil {
+						_ = s.forge.UpdateIssueState(r.Context(), repoKey(r), issueID, "closed")
+					}
+				}
+			}
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1417,8 +1492,7 @@ func (s *Server) updateRepositorySettings(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	allowed, err := s.forge.CanUseScope(r.Context(), user, r.PathValue("scope"))
-	if err != nil || !allowed {
+	if !s.canManageRepository(r, user) {
 		writeError(w, 403, "No permission to manage this repository.")
 		return
 	}
@@ -1431,6 +1505,213 @@ func (s *Server) updateRepositorySettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, 200, value)
+}
+
+func (s *Server) updateRepositoryVisibility(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "No permission to manage this repository.")
+		return
+	}
+	var input struct {
+		Visibility  string `json:"visibility"`
+		ConfirmName string `json:"confirmName"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.ConfirmName != repoKey(r) {
+		writeError(w, 400, "请输入完整仓库名称以确认。 ")
+		return
+	}
+	if err := s.repos.UpdateVisibility(r.Context(), repoKey(r), input.Visibility); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	value, _ := s.repos.Settings(r.Context(), repoKey(r))
+	writeJSON(w, 200, value)
+}
+func (s *Server) collaborators(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.repos.Collaborators(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "无法读取协作者。 ")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) setCollaborator(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理协作者。 ")
+		return
+	}
+	var input struct {
+		Permission string `json:"permission"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.repos.SetCollaborator(r.Context(), repoKey(r), r.PathValue("username"), input.Permission); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) removeCollaborator(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理协作者。 ")
+		return
+	}
+	if err := s.repos.RemoveCollaborator(r.Context(), repoKey(r), r.PathValue("username")); errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "未找到协作者。")
+	} else if err != nil {
+		writeError(w, 500, "无法移除协作者。")
+	} else {
+		w.WriteHeader(204)
+	}
+}
+func (s *Server) protectedBranches(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.repos.ProtectedBranches(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "无法读取保护分支。 ")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) setProtectedBranch(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理分支保护。 ")
+		return
+	}
+	var input repository.ProtectedBranch
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.Branch = r.PathValue("branch")
+	if err := s.repos.SetProtectedBranch(r.Context(), repoKey(r), input); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, input)
+}
+func (s *Server) removeProtectedBranch(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理分支保护。 ")
+		return
+	}
+	if err := s.repos.RemoveProtectedBranch(r.Context(), repoKey(r), r.PathValue("branch")); err != nil {
+		writeError(w, 500, "无法移除分支保护。 ")
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) transferRepository(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权转移仓库。 ")
+		return
+	}
+	var input struct {
+		TargetScope string `json:"targetScope"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	allowed, err := s.forge.CanUseScope(r.Context(), user, strings.TrimSpace(input.TargetScope))
+	if err != nil || !allowed {
+		writeError(w, 403, "请选择你拥有权限的目标空间。 ")
+		return
+	}
+	next, err := s.repos.Transfer(r.Context(), repo, strings.TrimSpace(input.TargetScope))
+	if errors.Is(err, repository.ErrExists) {
+		writeError(w, 409, "目标空间已有同名仓库。")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 200, next)
+	}
+}
+func (s *Server) deleteRepository(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权删除仓库。 ")
+		return
+	}
+	var input struct {
+		ConfirmName string `json:"confirmName"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.ConfirmName != repo.FullName {
+		writeError(w, 400, "请输入完整仓库名称以确认。 ")
+		return
+	}
+	if err := s.repos.Delete(r.Context(), repo); err != nil {
+		writeError(w, 500, "无法删除仓库。 ")
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) canManageRepository(r *http.Request, user forge.User) bool {
+	if allowed, err := s.forge.CanUseScope(r.Context(), user, r.PathValue("scope")); err == nil && allowed {
+		return true
+	}
+	permission, err := s.repos.CollaboratorPermission(r.Context(), repoKey(r), user.Username)
+	return err == nil && (permission == "maintain" || permission == "admin")
 }
 
 type credentials struct {
@@ -1465,6 +1746,9 @@ func (s *Server) requireRepo(w http.ResponseWriter, r *http.Request) (repository
 }
 
 func repoKey(r *http.Request) string { return r.PathValue("scope") + "/" + r.PathValue("name") }
+
+var issueCloseReference = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)`)
+
 func valueOr(value, fallback string) string {
 	if value == "" {
 		return fallback

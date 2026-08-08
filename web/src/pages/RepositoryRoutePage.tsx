@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, Star, Tag, Upload, Users, X } from "lucide-react"
+import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, ShieldCheck, Star, Tag, Trash2, Upload, UserPlus, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
-import type { Blob, Commit, CommitDetail, Contributor, GitRef, Issue, IssueComment, Label, PullRequest, Release, Repository, RepositorySettings, SSHInfo, TreeEntry, User } from "@/lib/forge-types"
+import type { Blob, Collaborator, Commit, CommitDetail, Contributor, GitRef, Issue, IssueComment, Label, ProtectedBranch, PullRequest, Release, Repository, RepositorySettings, SSHInfo, TreeEntry, User } from "@/lib/forge-types"
 
 function RepositoryView({
   name,
@@ -30,22 +30,25 @@ function RepositoryView({
   const [releases, setReleases] = useState<Release[]>([])
   const [contributors, setContributors] = useState<Contributor[]>([])
   const [repository, setRepository] = useState<Repository | null>(null)
+  const [repositorySettings, setRepositorySettings] = useState<RepositorySettings | null>(null)
   const [forkOpen, setForkOpen] = useState(false)
   const [forkName, setForkName] = useState("")
   const [message, setMessage] = useState("")
   const load = async () => {
-    const [a, b, c, d, repo] = await Promise.all([
+    const [a, b, c, d, repo, settings] = await Promise.all([
       api<Issue[]>(`/api/repos/${name}/issues`),
       api<PullRequest[]>(`/api/repos/${name}/pulls`),
       api<Release[]>(`/api/repos/${name}/releases`),
       api<Contributor[]>(`/api/repos/${name}/contributors`),
       api<Repository>(`/api/repos/${name}`),
+      api<RepositorySettings>(`/api/repos/${name}/settings`),
     ])
     setIssues(a.map((item) => ({ ...item, labels: item.labels || [] })))
     setPulls(b)
     setReleases(c)
     setContributors(d)
     setRepository(repo)
+    setRepositorySettings(settings)
   }
   useEffect(() => {
     void load().catch((cause: unknown) =>
@@ -109,7 +112,7 @@ function RepositoryView({
     ["tags", "标签", <Tag />],
     ["releases", "发布版本", <Tag />],
     ["settings", "设置", <Settings />],
-  ] as const
+  ].filter(([value]) => value === "issues" ? repositorySettings?.issuesEnabled !== false : value === "pulls" ? repositorySettings?.pullsEnabled !== false : value === "releases" ? repositorySettings?.releasesEnabled !== false : true) as [string, string, ReactNode][]
   const openTab = (value: string) => navigate(value === "code" ? `/${name}` : `/${name}/${value}`)
   return (
     <div className="mx-auto max-w-7xl px-5 py-7">
@@ -216,7 +219,7 @@ function RepositoryView({
             )}
           </div>
         )}
-        {tab === "settings" && <RepositorySettingsPanel name={name} />}
+        {tab === "settings" && <RepositorySettingsPanel name={name} user={user} onDeleted={onBack} onTransferred={onOpen} />}
       </section>
       {forkOpen && (
         <Modal title="派生仓库" onClose={() => setForkOpen(false)}>
@@ -403,99 +406,58 @@ function RepositoryList({
   )
 }
 
-function RepositorySettingsPanel({ name }: { name: string }) {
-  const [value, setValue] = useState<RepositorySettings>({
-    description: "",
-    visibility: "private",
-    defaultBranch: "main",
-    topics: [],
-  })
+function RepositorySettingsPanel({ name, user, onDeleted, onTransferred }: { name: string; user: User | null; onDeleted: () => void; onTransferred: (name: string) => void }) {
+  const emptySettings: RepositorySettings = { description: "", visibility: "private", defaultBranch: "main", topics: [], issuesEnabled: true, pullsEnabled: true, releasesEnabled: true, wikiEnabled: false, autoCloseIssues: false, archived: false }
+  const [value, setValue] = useState<RepositorySettings>(emptySettings)
   const [topics, setTopics] = useState("")
+  const [labels, setLabels] = useState<Label[]>([])
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([])
+  const [protections, setProtections] = useState<ProtectedBranch[]>([])
+  const [scopes, setScopes] = useState<{ name: string }[]>([])
+  const [section, setSection] = useState("general")
   const [message, setMessage] = useState("")
-  useEffect(() => {
-    void api<RepositorySettings>(`/api/repos/${name}/settings`)
-      .then((settings) => {
-        setValue(settings)
-        setTopics(settings.topics.join(", "))
-      })
-      .catch((cause: unknown) =>
-        setMessage(cause instanceof Error ? cause.message : "加载失败")
-      )
-  }, [name])
-  const save = async (event: FormEvent) => {
-    event.preventDefault()
-    try {
-      const next = {
-        ...value,
-        topics: topics
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-      }
-      setValue(
-        await api<RepositorySettings>(`/api/repos/${name}/settings`, {
-          method: "PATCH",
-          body: JSON.stringify(next),
-        })
-      )
-      setMessage("仓库设置已保存。")
-    } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "保存失败")
-    }
+  const [confirm, setConfirm] = useState<"visibility" | "delete" | null>(null)
+  const [confirmName, setConfirmName] = useState("")
+  const [labelForm, setLabelForm] = useState({ name: "", color: "#0e8a16", description: "" })
+  const [collaborator, setCollaborator] = useState({ username: "", permission: "write" })
+  const [protection, setProtection] = useState({ branch: "", requirePullRequest: true, requireApprovals: 1 })
+  const [targetScope, setTargetScope] = useState("")
+  const load = async () => {
+    const [settings, nextLabels, nextCollaborators, nextProtections, nextScopes] = await Promise.all([
+      api<RepositorySettings>(`/api/repos/${name}/settings`), api<Label[]>(`/api/repos/${name}/labels`), api<Collaborator[]>(`/api/repos/${name}/collaborators`), api<ProtectedBranch[]>(`/api/repos/${name}/branch-protections`), user ? api<{ name: string }[]>("/api/scopes") : Promise.resolve([]),
+    ])
+    setValue(settings); setTopics(settings.topics.join(", ")); setLabels(nextLabels); setCollaborators(nextCollaborators); setProtections(nextProtections); setScopes(nextScopes)
+    setTargetScope(nextScopes.find((scope) => scope.name !== name.split("/")[0])?.name || "")
   }
-  return (
-    <form
-      onSubmit={save}
-      className="max-w-2xl space-y-5 rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"
-    >
-      <div>
-        <h2 className="text-lg font-semibold">仓库设置</h2>
-        <p className="mt-1 text-sm text-zinc-500">
-          管理仓库简介、可见性、默认分支和 Topics。
-        </p>
-      </div>
-      <Field
-        label="仓库简介"
-        value={value.description}
-        onChange={(description) => setValue({ ...value, description })}
-        placeholder="描述这个项目"
-      />
-      <Field
-        label="默认分支"
-        value={value.defaultBranch}
-        onChange={(defaultBranch) => setValue({ ...value, defaultBranch })}
-        placeholder="main"
-      />
-      <Field
-        label="Topics（逗号分隔）"
-        value={topics}
-        onChange={setTopics}
-        placeholder="go, git, forge"
-      />
-      <label className="block text-sm font-medium">
-        可见性
-        <select
-          value={value.visibility}
-          onChange={(event) =>
-            setValue({
-              ...value,
-              visibility: event.target.value as "public" | "private",
-            })
-          }
-          className="mt-1.5 block h-10 w-full rounded-xl border border-zinc-200 bg-transparent px-3 dark:border-zinc-700"
-        >
-          <option value="private">私有</option>
-          <option value="public">公开</option>
-        </select>
-      </label>
-      {message && <p className="text-sm text-emerald-700">{message}</p>}
-      <Button type="submit">
-        <Settings />
-        保存仓库设置
-      </Button>
-    </form>
-  )
+  useEffect(() => { void load().catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载仓库设置。")) }, [name, user])
+  const save = async (next = value) => {
+    try {
+      const saved = await api<RepositorySettings>(`/api/repos/${name}/settings`, { method: "PATCH", body: JSON.stringify({ ...next, topics: topics.split(",").map((item) => item.trim()).filter(Boolean) }) })
+      setValue(saved); setMessage("设置已保存。")
+    } catch (cause) { setMessage(cause instanceof Error ? cause.message : "保存失败。") }
+  }
+  const setFeature = (key: keyof RepositorySettings, checked: boolean) => { const next = { ...value, [key]: checked }; setValue(next); void save(next) }
+  const nav = [["general", "常规"], ["features", "仓库功能"], ["issues", "议题标签"], ["access", "协作者"], ["branches", "分支保护"], ["lifecycle", "归档与转移"], ["danger", "危险操作"]]
+  return <div className="grid gap-7 lg:grid-cols-[190px_minmax(0,1fr)]">
+    <nav className="flex gap-1 overflow-x-auto border-b border-zinc-200 pb-3 text-sm lg:block lg:border-b-0 lg:border-r lg:pb-0 lg:pr-5 dark:border-zinc-800">
+      {nav.map(([id, label]) => <button key={id} onClick={() => setSection(id)} className={`whitespace-nowrap rounded-lg px-3 py-2 text-left lg:mb-1 lg:block lg:w-full ${section === id ? "bg-zinc-900 font-medium text-white dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"}`}>{label}</button>)}
+    </nav>
+    <div className="min-w-0">
+      {message && <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">{message}</p>}
+      {section === "general" && <SettingsSection title="常规" description="管理项目展示信息和默认分支。"><form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void save() }}><Field label="仓库简介" value={value.description} onChange={(description) => setValue({ ...value, description })} placeholder="描述这个项目" /><Field label="默认分支" value={value.defaultBranch} onChange={(defaultBranch) => setValue({ ...value, defaultBranch })} placeholder="main" /><Field label="Topics（逗号分隔）" value={topics} onChange={setTopics} placeholder="go, git, forge" /><div className="flex justify-end"><Button type="submit"><Settings />保存更改</Button></div></form></SettingsSection>}
+      {section === "features" && <SettingsSection title="仓库功能" description="按需开启工作流模块；关闭后保留历史数据。"><div className="divide-y divide-zinc-100 dark:divide-zinc-800"><SettingToggle label="议题" description="允许创建、讨论和管理议题。" checked={value.issuesEnabled} onChange={(checked) => setFeature("issuesEnabled", checked)} /><SettingToggle label="拉取请求" description="允许创建和审阅拉取请求。" checked={value.pullsEnabled} onChange={(checked) => setFeature("pullsEnabled", checked)} /><SettingToggle label="发布版本" description="允许发布标签说明和附加文件。" checked={value.releasesEnabled} onChange={(checked) => setFeature("releasesEnabled", checked)} /><SettingToggle label="Wiki" description="为仓库预留知识库功能。" checked={value.wikiEnabled} onChange={(checked) => setFeature("wikiEnabled", checked)} /></div></SettingsSection>}
+      {section === "issues" && <SettingsSection title="议题" description="维护议题标签，并控制合并拉取请求时的自动关闭行为。"><div className="mb-5 rounded-lg border border-zinc-200 px-4 dark:border-zinc-700"><SettingToggle label="自动关闭关联议题" description="拉取请求合并后，自动关闭描述中引用的议题。" checked={value.autoCloseIssues} onChange={(checked) => setFeature("autoCloseIssues", checked)} /></div><form className="grid gap-2 rounded-lg border border-zinc-200 p-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] dark:border-zinc-700" onSubmit={async (event) => { event.preventDefault(); try { const item = await api<Label>(`/api/repos/${name}/labels`, { method: "POST", body: JSON.stringify(labelForm) }); setLabels([...labels, item]); setLabelForm({ name: "", color: "#0e8a16", description: "" }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法新建标签。") } }}><input required value={labelForm.name} onChange={(event) => setLabelForm({ ...labelForm, name: event.target.value })} placeholder="标签名称" className="h-9 min-w-0 rounded-md border border-zinc-300 bg-transparent px-2 text-sm dark:border-zinc-700" /><input value={labelForm.color} onChange={(event) => setLabelForm({ ...labelForm, color: event.target.value })} type="color" aria-label="标签颜色" className="size-9 rounded border border-zinc-300 p-1 dark:border-zinc-700" /><input value={labelForm.description} onChange={(event) => setLabelForm({ ...labelForm, description: event.target.value })} placeholder="说明（可选）" className="h-9 min-w-0 rounded-md border border-zinc-300 bg-transparent px-2 text-sm dark:border-zinc-700" /><Button size="sm" type="submit"><Plus />添加</Button></form><div className="mt-4 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">{labels.length ? labels.map((label) => <div key={label.id} className="flex items-center gap-3 px-4 py-3"><span className="h-3 w-3 rounded-full" style={{ backgroundColor: label.color }} /><div className="min-w-0 flex-1"><p className="font-medium text-sm">{label.name}</p><p className="truncate text-xs text-zinc-500">{label.description || "无说明"}</p></div><Button size="xs" variant="destructive" aria-label={`删除 ${label.name}`} onPress={async () => { try { await api<void>(`/api/repos/${name}/labels/${label.id}`, { method: "DELETE" }); setLabels(labels.filter((item) => item.id !== label.id)) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法删除标签。") } }}><Trash2 /></Button></div>) : <p className="px-4 py-7 text-sm text-zinc-500">还没有议题标签。</p>}</div></SettingsSection>}
+      {section === "access" && <SettingsSection title="协作者" description="添加成员并分配只读、写入、维护或管理员权限。"><form className="flex flex-wrap gap-2" onSubmit={async (event) => { event.preventDefault(); try { await api<void>(`/api/repos/${name}/collaborators/${encodeURIComponent(collaborator.username)}`, { method: "PUT", body: JSON.stringify({ permission: collaborator.permission }) }); await load(); setCollaborator({ username: "", permission: "write" }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法添加协作者。") } }}><input required value={collaborator.username} onChange={(event) => setCollaborator({ ...collaborator, username: event.target.value })} placeholder="用户名" className="h-10 min-w-40 flex-1 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700" /><select value={collaborator.permission} onChange={(event) => setCollaborator({ ...collaborator, permission: event.target.value })} className="h-10 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700"><option value="read">只读</option><option value="write">写入</option><option value="maintain">维护</option><option value="admin">管理员</option></select><Button type="submit"><UserPlus />添加</Button></form><div className="mt-5 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">{collaborators.length ? collaborators.map((item) => <div key={item.username} className="flex items-center gap-3 px-4 py-3"><Avatar name={item.username} /><strong className="min-w-0 flex-1 truncate text-sm">{item.username}</strong><select value={item.permission} onChange={async (event) => { try { await api<void>(`/api/repos/${name}/collaborators/${encodeURIComponent(item.username)}`, { method: "PUT", body: JSON.stringify({ permission: event.target.value }) }); await load() } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法更新权限。") } }} className="h-8 rounded-md border border-zinc-300 bg-transparent px-2 text-xs dark:border-zinc-700"><option value="read">只读</option><option value="write">写入</option><option value="maintain">维护</option><option value="admin">管理员</option></select><Button size="xs" variant="outline" aria-label={`移除 ${item.username}`} onPress={async () => { await api<void>(`/api/repos/${name}/collaborators/${encodeURIComponent(item.username)}`, { method: "DELETE" }); await load() }}><X /></Button></div>) : <p className="px-4 py-7 text-sm text-zinc-500">尚未添加协作者。</p>}</div></SettingsSection>}
+      {section === "branches" && <SettingsSection title="分支保护" description="限制关键分支的直接合并，并设置审批要求。"><form className="grid gap-3 rounded-lg border border-zinc-200 p-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] dark:border-zinc-700" onSubmit={async (event) => { event.preventDefault(); try { await api<ProtectedBranch>(`/api/repos/${name}/branch-protections/${encodeURIComponent(protection.branch)}`, { method: "PUT", body: JSON.stringify(protection) }); await load(); setProtection({ branch: "", requirePullRequest: true, requireApprovals: 1 }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法保护分支。") } }}><input required value={protection.branch} onChange={(event) => setProtection({ ...protection, branch: event.target.value })} placeholder="分支名称，例如 main" className="h-10 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700" /><label className="flex items-center gap-2 text-sm"><input checked={protection.requirePullRequest} onChange={(event) => setProtection({ ...protection, requirePullRequest: event.target.checked })} type="checkbox" />需要拉取请求</label><label className="flex items-center gap-2 text-sm">审批 <input value={protection.requireApprovals} onChange={(event) => setProtection({ ...protection, requireApprovals: Number(event.target.value) })} type="number" min="0" max="10" className="h-8 w-14 rounded border border-zinc-300 bg-transparent px-2 dark:border-zinc-700" /></label><Button className="sm:col-span-3 sm:justify-self-end" type="submit"><ShieldCheck />保护分支</Button></form><div className="mt-5 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">{protections.length ? protections.map((item) => <div key={item.branch} className="flex items-center gap-3 px-4 py-3"><ShieldCheck className="size-4 text-emerald-600" /><strong className="min-w-0 flex-1 text-sm">{item.branch}</strong><span className="text-xs text-zinc-500">{item.requirePullRequest ? "需 PR" : "允许直推"} · {item.requireApprovals} 个审批</span><Button size="xs" variant="outline" aria-label={`移除 ${item.branch} 的保护`} onPress={async () => { await api<void>(`/api/repos/${name}/branch-protections/${encodeURIComponent(item.branch)}`, { method: "DELETE" }); await load() }}><X /></Button></div>) : <p className="px-4 py-7 text-sm text-zinc-500">暂无受保护分支。</p>}</div></SettingsSection>}
+      {section === "lifecycle" && <SettingsSection title="归档与转移" description="归档仓库会停止日常协作；转移会将仓库迁至你有权限的空间。"><div className="space-y-6"><div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-700"><SettingToggle label="归档仓库" description="归档后保留内容与设置，适用于停止维护的项目。" checked={value.archived} onChange={(checked) => setFeature("archived", checked)} /></div><form className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-700" onSubmit={async (event) => { event.preventDefault(); try { const moved = await api<Repository>(`/api/repos/${name}/transfer`, { method: "POST", body: JSON.stringify({ targetScope }) }); onTransferred(moved.fullName) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法转移仓库。") } }}><h3 className="font-medium">转移仓库</h3><p className="mt-1 text-sm text-zinc-500">目标空间会成为仓库的新归属。</p><div className="mt-4 flex flex-wrap gap-2"><select value={targetScope} onChange={(event) => setTargetScope(event.target.value)} className="h-10 min-w-40 flex-1 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700">{scopes.filter((scope) => scope.name !== name.split("/")[0]).map((scope) => <option key={scope.name} value={scope.name}>{scope.name}</option>)}</select><Button type="submit" isDisabled={!targetScope}>转移仓库</Button></div></form></div></SettingsSection>}
+      {section === "danger" && <SettingsSection title="危险操作" description="这些操作会影响仓库的访问范围或永久移除数据。"><div className="space-y-4"><div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 dark:border-amber-900 dark:bg-amber-950/20"><h3 className="font-medium">修改可见性</h3><p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">当前为{value.visibility === "public" ? "公开" : "私有"}仓库。变更前需要确认仓库名称。</p><Button className="mt-4" variant="outline" onPress={() => { setConfirm("visibility"); setConfirmName("") }}>改为{value.visibility === "public" ? "私有" : "公开"}</Button></div><div className="rounded-lg border border-red-200 bg-red-50/50 p-4 dark:border-red-900 dark:bg-red-950/20"><h3 className="font-medium text-red-800 dark:text-red-300">删除仓库</h3><p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">永久删除 Git 数据、议题、发布版本与配置，无法恢复。</p><Button className="mt-4" variant="destructive" onPress={() => { setConfirm("delete"); setConfirmName("") }}><Trash2 />删除仓库</Button></div></div></SettingsSection>}
+    </div>
+    {confirm && <Modal title={confirm === "delete" ? "删除仓库" : "修改仓库可见性"} onClose={() => setConfirm(null)}><p className="text-sm text-zinc-500">请输入 <strong className="text-zinc-800 dark:text-zinc-200">{name}</strong> 以确认此操作。</p><input autoFocus value={confirmName} onChange={(event) => setConfirmName(event.target.value)} className="mt-4 h-10 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700" placeholder={name} /><div className="mt-5 flex justify-end gap-2"><Button variant="outline" onPress={() => setConfirm(null)}>取消</Button><Button variant={confirm === "delete" ? "destructive" : "default"} isDisabled={confirmName !== name} onPress={async () => { try { if (confirm === "delete") { await api<void>(`/api/repos/${name}`, { method: "DELETE", body: JSON.stringify({ confirmName }) }); onDeleted() } else { const next = await api<RepositorySettings>(`/api/repos/${name}/visibility`, { method: "PUT", body: JSON.stringify({ visibility: value.visibility === "public" ? "private" : "public", confirmName }) }); setValue(next); setConfirm(null); setMessage("仓库可见性已更新。") } } catch (cause) { setMessage(cause instanceof Error ? cause.message : "操作失败。") } }}>{confirm === "delete" ? "永久删除" : "确认修改"}</Button></div></Modal>}
+  </div>
 }
+
+function SettingsSection({ title, description, children }: { title: string; description: string; children: ReactNode }) { return <section className="max-w-3xl rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"><header className="mb-5 border-b border-zinc-100 pb-4 dark:border-zinc-800"><h2 className="text-lg font-semibold">{title}</h2><p className="mt-1 text-sm text-zinc-500">{description}</p></header>{children}</section> }
+function SettingToggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) { return <label className="flex cursor-pointer items-center gap-4 py-4"><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{label}</span><span className="mt-1 block text-sm text-zinc-500">{description}</span></span><input className="size-4 accent-emerald-600" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label> }
 
 function LabelBadges({ labels = [] }: { labels?: Label[] }) {
   if (!labels.length) return null
