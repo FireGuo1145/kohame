@@ -248,6 +248,15 @@ func (s *Store) Branches(ctx context.Context, repo Repository) ([]Ref, error) {
 func (s *Store) Tags(ctx context.Context, repo Repository) ([]Ref, error) {
 	return s.refs(ctx, repo, "refs/tags")
 }
+func (s *Store) CreateTag(ctx context.Context, repo Repository, tag, ref string) error {
+	if !safeRef(tag) || !safeRef(ref) {
+		return ErrNotFound
+	}
+	if output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "tag", tag, ref).CombinedOutput(); err != nil {
+		return fmt.Errorf("create tag: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
 func (s *Store) refs(ctx context.Context, repo Repository, prefix string) ([]Ref, error) {
 	out, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "for-each-ref", "--format=%(refname:short)|%(objectname:short)", prefix).Output()
 	if err != nil {

@@ -1,6 +1,12 @@
 server:
   addr: ":3000"
 
+ssh:
+  # SSH Git service. Set addr to an empty string to disable it.
+  addr: ":2222"
+  # Public hostname shown in SSH clone URLs.
+  host: "localhost"
+
 storage:
   # Bare Git repositories are stored here. Relative paths are based on this file.
   repository_root: data/repos

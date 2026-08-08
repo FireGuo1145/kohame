@@ -53,6 +53,10 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, display_name VARCHAR(80) NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '', location VARCHAR(120) NOT NULL DEFAULT '', website VARCHAR(255) NOT NULL DEFAULT '', avatar_url VARCHAR(255) NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS user_follows (follower_id BIGINT NOT NULL, target_user_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (follower_id, target_user_id))`,
 		`CREATE TABLE IF NOT EXISTS organization_follows (follower_id BIGINT NOT NULL, organization_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (follower_id, organization_id))`,
+		`CREATE TABLE IF NOT EXISTS ssh_keys (id ` + idColumn + `, user_id BIGINT NOT NULL, title VARCHAR(120) NOT NULL, key_value TEXT NOT NULL UNIQUE, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS release_assets (id ` + idColumn + `, release_id BIGINT NOT NULL, file_name VARCHAR(255) NOT NULL, storage_name VARCHAR(255) NOT NULL, size BIGINT NOT NULL, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS labels (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, name VARCHAR(80) NOT NULL, color VARCHAR(7) NOT NULL, description VARCHAR(255) NOT NULL DEFAULT '', UNIQUE(repository_name, name))`,
+		`CREATE TABLE IF NOT EXISTS issue_labels (issue_id BIGINT NOT NULL, label_id BIGINT NOT NULL, PRIMARY KEY(issue_id, label_id))`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, Star, Tag, Users, X } from "lucide-react"
+import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, Star, Tag, Upload, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
-import type { Blob, Commit, CommitDetail, Contributor, GitRef, Issue, IssueComment, PullRequest, Release, Repository, RepositorySettings, TreeEntry, User } from "@/lib/forge-types"
+import type { Blob, Commit, CommitDetail, Contributor, GitRef, Issue, IssueComment, Label, PullRequest, Release, Repository, RepositorySettings, SSHInfo, TreeEntry, User } from "@/lib/forge-types"
 
 function RepositoryView({
   name,
@@ -41,7 +41,7 @@ function RepositoryView({
       api<Contributor[]>(`/api/repos/${name}/contributors`),
       api<Repository>(`/api/repos/${name}`),
     ])
-    setIssues(a)
+    setIssues(a.map((item) => ({ ...item, labels: item.labels || [] })))
     setPulls(b)
     setReleases(c)
     setContributors(d)
@@ -162,7 +162,7 @@ function RepositoryView({
         {tab === "tags" && <RepositoryList name={name} kind="tags" />}
         {tab === "issues" && (
           <WorkList
-            title="Issues"
+            title="议题"
             items={issues}
             user={user}
             fields={["title", "body"]}
@@ -177,40 +177,17 @@ function RepositoryView({
                 <strong className="ml-2">
                   #{item.id} {item.title}
                 </strong>
-                <p className="mt-1 text-sm text-zinc-500">
-                  Opened by {item.author} · {when(item.createdAt)}
-                </p>
+                <LabelBadges labels={item.labels} />
+                <p className="mt-1 text-sm text-zinc-500">由 {item.author} 创建于 {when(item.createdAt)}</p>
               </button>
             )}
           />
         )}
-        {tab === "issue-new" && <IssueComposer user={user} onCancel={() => navigate(`/${name}/issues`)} onSubmit={async (value) => { if (await add("issue", value)) navigate(`/${name}/issues`) }} />}
+        {tab === "issue-new" && <IssueComposer name={name} user={user} onCancel={() => navigate(`/${name}/issues`)} onCreated={() => navigate(`/${name}/issues`)} />}
         {tab === "issue-detail" && <IssueDetail name={name} issueID={issueID} user={user} onBack={() => navigate(`/${name}/issues`)} onStateChange={(state) => changeState("issues", issueID, state)} />}
         {tab === "pulls" && <PullRequestList items={pulls} user={user} onNew={() => navigate(`/${name}/compare`)} onDelete={(id) => remove("pulls", id)} onStateChange={(id, state) => changeState("pulls", id, state)} />}
         {tab === "compare" && <CompareChanges name={name} user={user} onCancel={() => navigate(`/${name}/pulls`)} onCreated={async (value) => { if (await add("pull", value)) navigate(`/${name}/pulls`) }} />}
-        {tab === "releases" && (
-          <WorkList
-            title="发布版本"
-            items={releases}
-            user={user}
-            fields={["tagName", "title", "notes"]}
-            button="发布版本"
-            onSubmit={(v) => add("release", v)}
-            onDelete={(id) => remove("releases", id)}
-            render={(item) => (
-              <>
-                <Tag className="inline size-3.5 text-emerald-600" />
-                <strong className="ml-2">{item.title}</strong>
-                <code className="ml-2 text-xs text-zinc-500">
-                  {item.tagName}
-                </code>
-                <p className="mt-1 text-sm text-zinc-500">
-                  Published by {item.author} · {when(item.createdAt)}
-                </p>
-              </>
-            )}
-          />
-        )}
+        {tab === "releases" && <ReleaseList name={name} user={user} releases={releases} onDelete={(id) => remove("releases", id)} onChanged={() => void load()} />}
         {tab === "contributors" && (
           <div className="rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
             {contributors.length ? (
@@ -283,6 +260,8 @@ function CodeBrowser({ name, user, onOpenFile, onCreate }: { name: string; user:
   const [copied, setCopied] = useState(false)
   const [branchMenuOpen, setBranchMenuOpen] = useState(false)
   const [codeMenuOpen, setCodeMenuOpen] = useState(false)
+  const [cloneProtocol, setCloneProtocol] = useState<"https" | "ssh">("https")
+  const [ssh, setSSH] = useState<SSHInfo | null>(null)
   const [branchQuery, setBranchQuery] = useState("")
   const [refTab, setRefTab] = useState<"branches" | "tags">("branches")
   const [message, setMessage] = useState("")
@@ -314,6 +293,7 @@ function CodeBrowser({ name, user, onOpenFile, onCreate }: { name: string; user:
       if (ref === "HEAD" && nextBranches[0]) setRef(nextBranches.some((branch) => branch.name === nextSettings.defaultBranch) ? nextSettings.defaultBranch : nextBranches[0].name)
     }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载仓库概览。"))
   }, [name, ref])
+  useEffect(() => { void api<SSHInfo>("/api/ssh").then(setSSH).catch(() => setSSH(null)) }, [])
   const openEntry = (entry: TreeEntry) => {
     if (entry.type === "tree") {
       setDirectory(entry.path)
@@ -324,6 +304,9 @@ function CodeBrowser({ name, user, onOpenFile, onCreate }: { name: string; user:
   const crumbs = directory ? directory.split("/") : []
   const visibleEntries = entries.filter((entry) => entry.name.toLowerCase().includes(filter.trim().toLowerCase()))
   const latestCommit = commits[0]
+  const httpsCloneURL = `${window.location.origin}/${name}.git`
+  const sshCloneURL = ssh ? (ssh.port === "22" ? `git@${ssh.host}:${name}.git` : `ssh://git@${ssh.host}:${ssh.port}/${name}.git`) : ""
+  const cloneURL = cloneProtocol === "ssh" ? sshCloneURL : httpsCloneURL
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_250px]">
       <div className="min-w-0">
@@ -335,7 +318,7 @@ function CodeBrowser({ name, user, onOpenFile, onCreate }: { name: string; user:
           <button className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"><GitBranch className="size-4" />{branches.length} 个分支</button>
           <button className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"><Tag className="size-4" />{releases.length} 个发布</button>
           <label className="ml-auto flex h-9 min-w-48 flex-1 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 text-zinc-400 shadow-sm sm:max-w-72 dark:border-zinc-700 dark:bg-zinc-900"><ListFilter className="size-4" /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="转到文件" className="w-full bg-transparent text-sm text-zinc-900 outline-none dark:text-zinc-100" /></label>
-          {user && <Button variant="outline" size="sm" onPress={onCreate}><Plus />添加文件</Button>}<div className="relative"><Button variant="outline" size="sm" aria-expanded={codeMenuOpen} onPress={() => { setCodeMenuOpen(!codeMenuOpen); setBranchMenuOpen(false) }}><Code2 />{copied ? "已复制" : "代码"}<ChevronDown /></Button>{codeMenuOpen && <div className="absolute right-0 top-10 z-20 w-80 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-zinc-100 shadow-2xl"><div className="mb-3 flex items-center justify-between"><strong>克隆仓库</strong><button onClick={() => setCodeMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><div className="mb-3 flex gap-1 rounded-lg border border-zinc-700 p-1 text-sm"><span className="rounded-md bg-zinc-700 px-3 py-1.5 font-medium">HTTPS</span><span className="px-3 py-1.5 text-zinc-400">SSH</span></div><div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-2"><code className="min-w-0 flex-1 truncate text-xs text-zinc-300">{window.location.origin}/{name}.git</code><button onClick={() => { void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`); setCopied(true) }} aria-label="复制克隆地址"><Copy className="size-4 text-zinc-400" /></button></div><p className="mt-3 text-xs text-zinc-500">使用网页地址克隆此仓库。</p><div className="mt-4 space-y-1 border-t border-zinc-800 pt-3 text-sm"><button onClick={() => { window.location.href = `/api/repos/${name}/archive?ref=${encodeURIComponent(ref)}` }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><FolderGit2 className="size-4" />下载 ZIP</button></div></div>}</div>
+          {user && <Button variant="outline" size="sm" onPress={onCreate}><Plus />添加文件</Button>}<div className="relative"><Button variant="outline" size="sm" aria-expanded={codeMenuOpen} onPress={() => { setCodeMenuOpen(!codeMenuOpen); setBranchMenuOpen(false) }}><Code2 />{copied ? "已复制" : "代码"}<ChevronDown /></Button>{codeMenuOpen && <div className="absolute right-0 top-10 z-20 w-80 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-950 p-4 text-zinc-100 shadow-2xl"><div className="mb-3 flex items-center justify-between"><strong>克隆仓库</strong><button onClick={() => setCodeMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><div className="mb-3 flex gap-1 rounded-lg border border-zinc-700 p-1 text-sm"><button onClick={() => setCloneProtocol("https")} className={`rounded-md px-3 py-1.5 ${cloneProtocol === "https" ? "bg-zinc-700 font-medium" : "text-zinc-400"}`}>HTTPS</button><button onClick={() => setCloneProtocol("ssh")} className={`rounded-md px-3 py-1.5 ${cloneProtocol === "ssh" ? "bg-zinc-700 font-medium" : "text-zinc-400"}`}>SSH</button></div><div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-2"><code className="min-w-0 flex-1 truncate text-xs text-zinc-300">{cloneURL || "SSH 服务未配置"}</code><button disabled={!cloneURL} onClick={() => { void navigator.clipboard.writeText(`git clone ${cloneURL}`); setCopied(true) }} aria-label="复制克隆命令"><Copy className="size-4 text-zinc-400" /></button></div><p className="mt-3 text-xs text-zinc-500">{cloneProtocol === "ssh" ? "请先在个人设置中添加 SSH 公钥。" : "使用网页地址克隆此仓库。"}</p><div className="mt-4 space-y-1 border-t border-zinc-800 pt-3 text-sm"><button onClick={() => { window.location.href = `/api/repos/${name}/archive?ref=${encodeURIComponent(ref)}` }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><FolderGit2 className="size-4" />下载 ZIP</button></div></div>}</div>
         </div>
         {message && <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50">{message}</p>}
         <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -514,27 +497,28 @@ function RepositorySettingsPanel({ name }: { name: string }) {
   )
 }
 
-function IssueComposer({
-  user,
-  onCancel,
-  onSubmit,
-}: {
-  user: User | null
-  onCancel: () => void
-  onSubmit: (value: Record<string, string>) => Promise<void>
-}) {
+function LabelBadges({ labels = [] }: { labels?: Label[] }) {
+  if (!labels.length) return null
+  return <span className="ml-2 inline-flex flex-wrap gap-1 align-middle">{labels.map((label) => <span key={label.id} title={label.description} className="rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: `${label.color}22`, color: label.color }}>{label.name}</span>)}</span>
+}
+
+function IssueComposer({ name, user, onCancel, onCreated }: { name: string; user: User | null; onCancel: () => void; onCreated: () => void }) {
   const [title, setTitle] = useState("")
   const [body, setBody] = useState("")
+  const [labels, setLabels] = useState<Label[]>([])
+  const [selected, setSelected] = useState<number[]>([])
   const [preview, setPreview] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
+  useEffect(() => { void api<Label[]>(`/api/repos/${name}/labels`).then(setLabels).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载标签。")) }, [name])
+  const toggle = (id: number) => setSelected(selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id])
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_250px]">
       <form className="min-w-0" onSubmit={async (event) => {
         event.preventDefault()
         if (!user) { setMessage("请先登录再创建议题。 "); return }
         setSaving(true); setMessage("")
-        try { await onSubmit({ title, body }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法创建议题。") } finally { setSaving(false) }
+        try { await api(`/api/repos/${name}/issues`, { method: "POST", body: JSON.stringify({ title, body, labelIds: selected }) }); onCreated() } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法创建议题。") } finally { setSaving(false) }
       }}>
         <h1 className="mb-5 text-2xl font-semibold">新建议题</h1>
         <input autoFocus required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="标题" className="h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm shadow-sm outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-100 dark:border-zinc-700 dark:focus:ring-sky-950" />
@@ -550,7 +534,7 @@ function IssueComposer({
       </form>
       <aside className="divide-y divide-zinc-200 border-t border-zinc-200 text-sm dark:divide-zinc-800 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6">
         <IssueMeta label="受理人" value="未分配" />
-        <IssueMeta label="标签" value="暂无标签" />
+        <div className="py-5"><p className="font-medium">标签</p><div className="mt-3 space-y-2">{labels.length ? labels.map((label) => <label key={label.id} className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={selected.includes(label.id)} onChange={() => toggle(label.id)} /><span className="rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: `${label.color}22`, color: label.color }}>{label.name}</span></label>) : <p className="text-zinc-500">暂无可选标签</p>}</div></div>
         <IssueMeta label="项目" value="暂无项目" />
         <IssueMeta label="里程碑" value="暂无里程碑" />
       </aside>
@@ -565,33 +549,83 @@ function IssueMeta({ label, value }: { label: string; value: string }) {
 function IssueDetail({ name, issueID, user, onBack, onStateChange }: { name: string; issueID: number; user: User | null; onBack: () => void; onStateChange: (state: string) => void }) {
   const [issue, setIssue] = useState<Issue | null>(null)
   const [comments, setComments] = useState<IssueComment[]>([])
+  const [labels, setLabels] = useState<Label[]>([])
+  const [editingLabels, setEditingLabels] = useState(false)
+  const [newLabelName, setNewLabelName] = useState("")
+  const [newLabelColor, setNewLabelColor] = useState("#0e8a16")
   const [body, setBody] = useState("")
   const [message, setMessage] = useState("")
   const [saving, setSaving] = useState(false)
   const load = async () => {
-    const [nextIssue, nextComments] = await Promise.all([
+    const [nextIssue, nextComments, nextLabels] = await Promise.all([
       api<Issue>(`/api/repos/${name}/issues/${issueID}`),
       api<IssueComment[]>(`/api/repos/${name}/issues/${issueID}/comments`),
+      api<Label[]>(`/api/repos/${name}/labels`),
     ])
-    setIssue(nextIssue)
+    setIssue({ ...nextIssue, labels: nextIssue.labels || [] })
     setComments(nextComments)
+    setLabels(nextLabels)
   }
   useEffect(() => { void load().catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载议题。")) }, [name, issueID])
   if (!issue && !message) return <Loading />
   if (!issue) return <PageMessage title="议题" message={message} />
   const updateState = (state: string) => { onStateChange(state); setIssue({ ...issue, state }) }
+  const saveLabels = async (ids: number[]) => { try { await api<void>(`/api/repos/${name}/issues/${issueID}/labels`, { method: "PUT", body: JSON.stringify({ labelIds: ids }) }); setIssue({ ...issue, labels: labels.filter((label) => ids.includes(label.id)) }); setEditingLabels(false) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法更新标签。") } }
+  const createLabel = async () => { try { const item = await api<Label>(`/api/repos/${name}/labels`, { method: "POST", body: JSON.stringify({ name: newLabelName, color: newLabelColor, description: "" }) }); setLabels([...labels, item]); setNewLabelName(""); await saveLabels([...issue.labels.map((label) => label.id), item.id]) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法创建标签。") } }
   return <div className="mx-auto max-w-5xl">
     <button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />所有议题</button>
-    <div className="border-b border-zinc-200 pb-5 dark:border-zinc-800"><h1 className="text-2xl font-semibold leading-tight">{issue.title} <span className="font-normal text-zinc-400">#{issue.id}</span></h1><div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500"><Badge state={issue.state} /><span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong> opened this issue {when(issue.createdAt)}</span></div></div>
+    <div className="border-b border-zinc-200 pb-5 dark:border-zinc-800"><h1 className="text-2xl font-semibold leading-tight">{issue.title} <span className="font-normal text-zinc-400">#{issue.id}</span></h1><div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500"><Badge state={issue.state} /><LabelBadges labels={issue.labels} /><span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong> 创建于 {when(issue.createdAt)}</span></div></div>
     <div className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_210px]">
       <div className="space-y-5">
         <article className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{issue.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong><span>创建于 {when(issue.createdAt)}</span></header><div className="min-h-24 whitespace-pre-wrap p-4 text-sm leading-6">{issue.body || <span className="text-zinc-400">未提供描述。</span>}</div></article>
         {comments.map((comment) => <article key={comment.id} className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-emerald-100 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{comment.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{comment.author}</strong><span>commented {when(comment.createdAt)}</span></header><div className="whitespace-pre-wrap p-4 text-sm leading-6">{comment.body}</div></article>)}
         {user ? <form className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900" onSubmit={async (event) => { event.preventDefault(); if (!body.trim()) return; setSaving(true); setMessage(""); try { const comment = await api<IssueComment>(`/api/repos/${name}/issues/${issueID}/comments`, { method: "POST", body: JSON.stringify({ body }) }); setComments([...comments, comment]); setBody("") } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法发布评论。") } finally { setSaving(false) } }}><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="留下评论" className="min-h-28 w-full resize-y bg-transparent p-2 text-sm leading-6 outline-none" />{message && <p className="px-2 pb-2 text-sm text-red-600">{message}</p>}<div className="flex justify-end border-t border-zinc-100 pt-3 dark:border-zinc-800"><Button type="submit" isDisabled={saving || !body.trim()}><MessageSquare />{saving ? "正在评论..." : "评论"}</Button></div></form> : <p className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700">登录后即可参与讨论。</p>}
       </div>
-      <aside className="border-t border-zinc-200 text-sm dark:border-zinc-800 lg:border-t-0 lg:border-l lg:pl-5"><IssueMeta label="受理人" value="未分配" /><IssueMeta label="标签" value="暂无标签" /><IssueMeta label="项目" value="暂无项目" />{user && <div className="py-5"><p className="font-medium">状态</p><Button size="sm" variant="outline" className="mt-3" onPress={() => updateState(issue.state === "open" ? "closed" : "open")}>{issue.state === "open" ? "关闭议题" : "重新打开议题"}</Button></div>}</aside>
+      <aside className="border-t border-zinc-200 text-sm dark:border-zinc-800 lg:border-t-0 lg:border-l lg:pl-5"><IssueMeta label="受理人" value="未分配" /><div className="py-5"><div className="flex items-center justify-between"><p className="font-medium">标签</p>{user && <button onClick={() => setEditingLabels(!editingLabels)} className="text-xs text-sky-700 hover:underline dark:text-sky-300">{editingLabels ? "取消" : "编辑"}</button>}</div>{editingLabels ? <div className="mt-3 space-y-2">{labels.map((label) => <label key={label.id} className="flex items-center gap-2"><input type="checkbox" checked={issue.labels.some((item) => item.id === label.id)} onChange={(event) => { const ids = issue.labels.map((item) => item.id); void saveLabels(event.target.checked ? [...ids, label.id] : ids.filter((id) => id !== label.id)) }} /><span className="rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: `${label.color}22`, color: label.color }}>{label.name}</span></label>)}<div className="flex gap-2 pt-2"><input value={newLabelName} onChange={(event) => setNewLabelName(event.target.value)} placeholder="新标签" className="h-8 min-w-0 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 text-xs dark:border-zinc-700"/><input value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} type="color" aria-label="标签颜色" className="size-8 rounded border border-zinc-300 p-1 dark:border-zinc-700"/><Button size="xs" variant="outline" isDisabled={!newLabelName.trim()} onPress={() => void createLabel()}>新建</Button></div></div> : <div className="mt-2"><LabelBadges labels={issue.labels} />{!issue.labels.length && <p className="text-zinc-500">暂无标签</p>}</div>}</div><IssueMeta label="项目" value="暂无项目" />{user && <div className="py-5"><p className="font-medium">状态</p><Button size="sm" variant="outline" className="mt-3" onPress={() => updateState(issue.state === "open" ? "closed" : "open")}>{issue.state === "open" ? "关闭议题" : "重新打开议题"}</Button></div>}</aside>
     </div>
   </div>
+}
+
+function fileSize(size: number) {
+  return size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function ReleaseList({ name, user, releases, onDelete, onChanged }: { name: string; user: User | null; releases: Release[]; onDelete: (id: number) => void; onChanged: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [tags, setTags] = useState<GitRef[]>([])
+  const [branches, setBranches] = useState<GitRef[]>([])
+  const [existingTag, setExistingTag] = useState("")
+  const [createTag, setCreateTag] = useState(false)
+  const [tagName, setTagName] = useState("")
+  const [targetRef, setTargetRef] = useState("")
+  const [title, setTitle] = useState("")
+  const [notes, setNotes] = useState("")
+  const [files, setFiles] = useState<File[]>([])
+  const [message, setMessage] = useState("")
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { void Promise.all([api<GitRef[]>(`/api/repos/${name}/tags`), api<GitRef[]>(`/api/repos/${name}/branches`)]).then(([nextTags, nextBranches]) => { setTags(nextTags); setBranches(nextBranches); setExistingTag(nextTags[0]?.name || ""); setTargetRef(nextBranches[0]?.name || "HEAD") }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法读取标签和分支。")) }, [name])
+  const publish = async (event: FormEvent) => {
+    event.preventDefault()
+    const selectedTag = createTag ? tagName.trim() : existingTag
+    if (!selectedTag) { setMessage("请选择已有标签，或输入新标签名称。 "); return }
+    setSaving(true); setMessage("")
+    try {
+      const release = await api<Release>(`/api/repos/${name}/releases`, { method: "POST", body: JSON.stringify({ tagName: selectedTag, title: title.trim() || selectedTag, notes, createTag, targetRef }) })
+      for (const file of files) {
+        const form = new FormData(); form.append("asset", file)
+        const response = await fetch(`/api/repos/${name}/releases/${release.id}/assets`, { method: "POST", body: form })
+        if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error || `无法上传 ${file.name}`) }
+      }
+      setOpen(false); setTitle(""); setNotes(""); setTagName(""); setFiles([]); onChanged()
+    } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法发布版本。") }
+    finally { setSaving(false) }
+  }
+  return <>
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold">发布版本</h1><p className="mt-1 text-sm text-zinc-500">为已有标签发布说明和可下载文件。</p></div>{user && <Button onPress={() => setOpen(true)}><Tag />新建发布版本</Button>}</div>
+    {message && <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/50">{message}</p>}
+    <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">{releases.length ? releases.map((release) => <article key={release.id} className="border-b border-zinc-200 px-5 py-5 last:border-0 dark:border-zinc-800"><div className="flex flex-wrap items-center gap-2"><Tag className="size-4 text-emerald-600" /><strong>{release.title}</strong><code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{release.tagName}</code></div>{release.notes && <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700 dark:text-zinc-300">{release.notes}</p>}<p className="mt-3 text-xs text-zinc-500">由 {release.author} 发布于 {when(release.createdAt)}</p>{release.assets.length > 0 && <div className="mt-4 border-t border-zinc-100 pt-3 dark:border-zinc-800"><p className="mb-2 text-xs font-medium text-zinc-500">发布文件</p>{release.assets.map((asset) => <a key={asset.id} href={asset.url} className="flex items-center gap-2 py-1 text-sm text-sky-700 hover:underline dark:text-sky-300"><Upload className="size-3.5" />{asset.fileName}<span className="text-xs text-zinc-500">{fileSize(asset.size)}</span></a>)}</div>}{user && <div className="mt-4"><Button size="xs" variant="destructive" onPress={() => onDelete(release.id)}>删除发布版本</Button></div>}</article>) : <Empty icon={<Tag />} title="暂无发布版本" text={user ? "选择标签后发布第一个版本。" : "登录后可发布版本。"} />}</div>
+    {open && <Modal title="新建发布版本" onClose={() => setOpen(false)}><form className="space-y-4" onSubmit={publish}><div className="flex gap-4 text-sm"><label className="flex items-center gap-2"><input type="radio" checked={!createTag} onChange={() => setCreateTag(false)} />已有标签</label><label className="flex items-center gap-2"><input type="radio" checked={createTag} onChange={() => setCreateTag(true)} />新建标签</label></div>{createTag ? <><label className="block text-sm font-medium">标签名称<input required value={tagName} onChange={(event) => setTagName(event.target.value)} placeholder="v1.0.0" className="mt-1.5 h-10 w-full rounded-lg border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700" /></label><label className="block text-sm font-medium">目标分支或提交<select value={targetRef} onChange={(event) => setTargetRef(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700">{branches.length ? branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>) : <option value="HEAD">当前 HEAD</option>}</select></label></> : <label className="block text-sm font-medium">已有标签<select required value={existingTag} onChange={(event) => setExistingTag(event.target.value)} className="mt-1.5 h-10 w-full rounded-lg border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700">{tags.length ? tags.map((tag) => <option key={tag.name} value={tag.name}>{tag.name}</option>) : <option value="">暂无标签，请创建新标签</option>}</select></label>}<label className="block text-sm font-medium">发布标题<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={createTag ? tagName || "v1.0.0" : existingTag} className="mt-1.5 h-10 w-full rounded-lg border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700" /></label><label className="block text-sm font-medium">发布说明<textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="说明此版本的更新内容" className="mt-1.5 min-h-28 w-full rounded-lg border border-zinc-200 bg-transparent p-3 text-sm dark:border-zinc-700" /></label><label className="block text-sm font-medium">发布文件<input type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files || []))} className="mt-1.5 block w-full text-sm" /></label>{files.length > 0 && <p className="text-xs text-zinc-500">已选择 {files.length} 个文件</p>}<div className="flex justify-end gap-2"><Button type="button" variant="outline" onPress={() => setOpen(false)}>取消</Button><Button type="submit" isPending={saving}>{saving ? "正在发布..." : "发布版本"}</Button></div></form></Modal>}
+  </>
 }
 
 function PullRequestList({ items, user, onNew, onDelete, onStateChange }: { items: PullRequest[]; user: User | null; onNew: () => void; onDelete: (id: number) => void; onStateChange: (id: number, state: string) => void }) {

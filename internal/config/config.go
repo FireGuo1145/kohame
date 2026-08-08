@@ -10,9 +10,14 @@ import (
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
+	SSH      SSHConfig      `yaml:"ssh"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Database DatabaseConfig `yaml:"database"`
 	Captcha  CaptchaConfig  `yaml:"captcha"`
+}
+type SSHConfig struct {
+	Addr string `yaml:"addr"`
+	Host string `yaml:"host"`
 }
 
 type ServerConfig struct {

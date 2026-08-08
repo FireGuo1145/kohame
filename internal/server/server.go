@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	sshserver "github.com/gliderlabs/ssh"
+	cryptossh "golang.org/x/crypto/ssh"
 	"kohame/internal/config"
 	"kohame/internal/database"
 	"kohame/internal/forge"
@@ -28,10 +30,14 @@ import (
 )
 
 type Server struct {
-	repos     *repository.Store
-	forge     *forge.Store
-	captcha   config.CaptchaConfig
-	avatarDir string
+	repos      *repository.Store
+	forge      *forge.Store
+	captcha    config.CaptchaConfig
+	avatarDir  string
+	releaseDir string
+	sshServer  *sshserver.Server
+	sshHost    string
+	sshPort    string
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -54,10 +60,72 @@ func New(cfg config.Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forgeStore, captcha: captcha, avatarDir: avatarDir}, nil
+	releaseDir := filepath.Join(filepath.Dir(cfg.Storage.RepositoryRoot), "release-assets")
+	if err := os.MkdirAll(releaseDir, 0o755); err != nil {
+		db.Close()
+		return nil, err
+	}
+	_, sshPort, _ := net.SplitHostPort(cfg.SSH.Addr)
+	server := &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forgeStore, captcha: captcha, avatarDir: avatarDir, releaseDir: releaseDir, sshHost: cfg.SSH.Host, sshPort: sshPort}
+	if cfg.SSH.Addr != "" {
+		server.startSSH(cfg.SSH.Addr)
+	}
+	return server, nil
 }
 
-func (s *Server) Close() error { return s.repos.Close() }
+func (s *Server) Close() error {
+	if s.sshServer != nil {
+		_ = s.sshServer.Close()
+	}
+	return s.repos.Close()
+}
+
+func (s *Server) startSSH(addr string) {
+	s.sshServer = &sshserver.Server{Addr: addr, Handler: s.gitSSH, PublicKeyHandler: func(ctx sshserver.Context, key sshserver.PublicKey) bool {
+		value := strings.TrimSpace(string(cryptossh.MarshalAuthorizedKey(key)))
+		user, err := s.forge.UserBySSHKey(context.Background(), value)
+		if err != nil {
+			return false
+		}
+		ctx.Permissions().Extensions = map[string]string{"username": user.Username}
+		return true
+	}}
+	go func() { _ = s.sshServer.ListenAndServe() }()
+}
+func (s *Server) gitSSH(session sshserver.Session) {
+	command := session.Command()
+	if len(command) != 2 || (command[0] != "git-upload-pack" && command[0] != "git-receive-pack") {
+		_, _ = io.WriteString(session, "仅支持 Git SSH 操作。\n")
+		_ = session.Exit(1)
+		return
+	}
+	repoName := strings.Trim(strings.TrimSpace(command[1]), "'\"")
+	repoName = strings.TrimPrefix(repoName, "/")
+	if !strings.HasSuffix(repoName, ".git") {
+		_ = session.Exit(1)
+		return
+	}
+	repoName = strings.TrimSuffix(repoName, ".git")
+	scope, name, ok := strings.Cut(repoName, "/")
+	if !ok {
+		_ = session.Exit(1)
+		return
+	}
+	repo, err := s.repos.Get(scope, name)
+	if err != nil {
+		_ = session.Exit(1)
+		return
+	}
+	cmd := exec.Command(command[0], repo.Path)
+	cmd.Stdin = session
+	cmd.Stdout = session
+	cmd.Stderr = session.Stderr()
+	if err := cmd.Run(); err != nil {
+		_ = session.Exit(1)
+		return
+	}
+	_ = session.Exit(0)
+}
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -65,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup/admin", s.createAdmin)
 	mux.HandleFunc("GET /api/settings", s.settings)
 	mux.HandleFunc("GET /api/captcha", s.captchaSettings)
+	mux.HandleFunc("GET /api/ssh", s.sshSettings)
 	mux.HandleFunc("GET /api/admin/settings", s.adminSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", s.updateSettings)
 	mux.HandleFunc("POST /api/auth/register", s.register)
@@ -76,6 +145,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/user/settings", s.personalSettings)
 	mux.HandleFunc("PATCH /api/user/settings", s.updatePersonalSettings)
 	mux.HandleFunc("POST /api/user/avatar", s.uploadAvatar)
+	mux.HandleFunc("GET /api/user/ssh-keys", s.sshKeys)
+	mux.HandleFunc("POST /api/user/ssh-keys", s.addSSHKey)
+	mux.HandleFunc("DELETE /api/user/ssh-keys/{id}", s.deleteSSHKey)
 	mux.HandleFunc("GET /api/scopes", s.scopes)
 	mux.HandleFunc("POST /api/organizations", s.createOrganization)
 	mux.HandleFunc("GET /api/organizations/{name}", s.organization)
@@ -104,6 +176,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/archive", s.archive)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues", s.createIssue)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/labels", s.labels)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/labels", s.createLabel)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/issues/{id}/labels", s.setIssueLabels)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues/{id}", s.issue)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/issues/{id}", s.updateIssue)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/issues/{id}", s.deleteIssue)
@@ -116,9 +191,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/releases", s.listReleases)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/releases", s.createRelease)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/releases/{id}", s.deleteRelease)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/releases/{id}/assets", s.uploadReleaseAsset)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/contributors", s.contributors)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}", s.getRepo)
 	mux.Handle("GET /uploads/avatars/", http.StripPrefix("/uploads/avatars/", http.FileServer(http.Dir(s.avatarDir))))
+	mux.Handle("GET /uploads/releases/", http.StripPrefix("/uploads/releases/", http.FileServer(http.Dir(s.releaseDir))))
 	mux.HandleFunc("/{scope}/{rest...}", s.gitHTTPDirect)
 	mux.Handle("/", spa())
 	return securityHeaders(mux)
@@ -299,6 +376,16 @@ func (s *Server) sendVerification(r *http.Request, user forge.User) error {
 func (s *Server) captchaSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"enabled": s.captcha.Enabled, "siteKey": s.captcha.SiteKey})
 }
+func (s *Server) sshSettings(w http.ResponseWriter, r *http.Request) {
+	host := s.sshHost
+	if host == "" {
+		host, _, _ = net.SplitHostPort(r.Host)
+		if host == "" {
+			host = r.Host
+		}
+	}
+	writeJSON(w, 200, map[string]string{"host": host, "port": s.sshPort})
+}
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var input struct {
@@ -400,6 +487,59 @@ func (s *Server) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, value)
+}
+func (s *Server) sshKeys(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.SSHKeys(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, 500, "无法读取 SSH 密钥。")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) addSSHKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Title string `json:"title"`
+		Key   string `json:"key"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	key, _, _, _, err := cryptossh.ParseAuthorizedKey([]byte(input.Key))
+	if err != nil {
+		writeError(w, 400, "无效的 SSH 公钥。")
+		return
+	}
+	item, err := s.forge.AddSSHKey(r.Context(), user, input.Title, strings.TrimSpace(string(cryptossh.MarshalAuthorizedKey(key))))
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeleteSSHKey(r.Context(), user.ID, id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "未找到 SSH 密钥。")
+	} else if err != nil {
+		writeError(w, 500, "无法删除 SSH 密钥。")
+	} else {
+		w.WriteHeader(204)
+	}
 }
 func (s *Server) scopes(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -667,6 +807,66 @@ func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, items)
 }
+func (s *Server) labels(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.Labels(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "无法读取标签。")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createLabel(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	allowed, err := s.forge.CanUseScope(r.Context(), user, r.PathValue("scope"))
+	if err != nil || !allowed {
+		writeError(w, 403, "无权管理仓库标签。")
+		return
+	}
+	var input forge.Label
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreateLabel(r.Context(), repoKey(r), input.Name, input.Color, input.Description)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) setIssueLabels(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		LabelIDs []int64 `json:"labelIds"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.forge.SetIssueLabels(r.Context(), repoKey(r), id, input.LabelIDs); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "未找到议题或标签。")
+	} else if err != nil {
+		writeError(w, 500, "无法更新议题标签。")
+	} else {
+		w.WriteHeader(204)
+	}
+}
 func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
@@ -676,8 +876,9 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title    string  `json:"title"`
+		Body     string  `json:"body"`
+		LabelIDs []int64 `json:"labelIds"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -686,6 +887,13 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
+	}
+	if len(input.LabelIDs) > 0 {
+		if err := s.forge.SetIssueLabels(r.Context(), repoKey(r), item.ID, input.LabelIDs); err != nil {
+			writeError(w, 400, "无法设置议题标签。")
+			return
+		}
+		item.Labels, _ = s.forge.IssueLabels(r.Context(), item.ID)
 	}
 	s.notifyRepositoryOwner(r, user, "issue", user.Username+" opened an issue", item.Title)
 	writeJSON(w, 201, item)
@@ -899,7 +1107,7 @@ func (s *Server) listReleases(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "Could not load releases.")
 		return
 	}
-	writeJSON(w, 200, items)
+	writeJSON(w, 200, s.withReleaseAssetURLs(items))
 }
 func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
@@ -910,12 +1118,40 @@ func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		TagName string `json:"tagName"`
-		Title   string `json:"title"`
-		Notes   string `json:"notes"`
+		TagName   string `json:"tagName"`
+		Title     string `json:"title"`
+		Notes     string `json:"notes"`
+		CreateTag bool   `json:"createTag"`
+		TargetRef string `json:"targetRef"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
+	}
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	tags, err := s.repos.Tags(r.Context(), repo)
+	if err != nil {
+		writeError(w, 500, "无法读取标签。")
+		return
+	}
+	exists := false
+	for _, tag := range tags {
+		if tag.Name == input.TagName {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		if !input.CreateTag {
+			writeError(w, 400, "请选择已有标签或创建新标签。")
+			return
+		}
+		if err := s.repos.CreateTag(r.Context(), repo, input.TagName, valueOr(input.TargetRef, "HEAD")); err != nil {
+			writeError(w, 400, "无法创建标签："+err.Error())
+			return
+		}
 	}
 	item, err := s.forge.CreateRelease(r.Context(), repoKey(r), user, input.TagName, input.Title, input.Notes)
 	if err != nil {
@@ -923,6 +1159,74 @@ func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, item)
+}
+func (s *Server) uploadReleaseAsset(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.ListReleases(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "无法读取发布版本。")
+		return
+	}
+	found := false
+	for _, item := range items {
+		if item.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, 404, "未找到发布版本。")
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, 400, "发布文件过大。")
+		return
+	}
+	file, header, err := r.FormFile("asset")
+	if err != nil {
+		writeError(w, 400, "请选择发布文件。")
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, 32<<20))
+	if err != nil {
+		writeError(w, 400, "无法读取发布文件。")
+		return
+	}
+	name := filepath.Base(header.Filename)
+	if name == "." || name == "" {
+		writeError(w, 400, "无效的文件名。")
+		return
+	}
+	storage := fmt.Sprintf("%d-%d-%s", id, time.Now().UnixNano(), name)
+	if err := os.WriteFile(filepath.Join(s.releaseDir, storage), content, 0o644); err != nil {
+		writeError(w, 500, "无法保存发布文件。")
+		return
+	}
+	asset, err := s.forge.AddReleaseAsset(r.Context(), id, name, storage, int64(len(content)))
+	if err != nil {
+		writeError(w, 500, "无法记录发布文件。")
+		return
+	}
+	asset.URL = "/uploads/releases/" + storage
+	writeJSON(w, 201, asset)
+}
+func (s *Server) withReleaseAssetURLs(items []forge.Release) []forge.Release {
+	for i := range items {
+		for j := range items[i].Assets {
+			items[i].Assets[j].URL = "/uploads/releases/" + items[i].Assets[j].StorageName
+		}
+	}
+	return items
 }
 func (s *Server) deleteRelease(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {

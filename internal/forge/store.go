@@ -57,6 +57,13 @@ type Issue struct {
 	Author    string    `json:"author"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	Labels    []Label   `json:"labels"`
+}
+type Label struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description"`
 }
 type IssueComment struct {
 	ID        int64     `json:"id"`
@@ -76,12 +83,20 @@ type PullRequest struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 type Release struct {
-	ID        int64     `json:"id"`
-	TagName   string    `json:"tagName"`
-	Title     string    `json:"title"`
-	Notes     string    `json:"notes"`
-	Author    string    `json:"author"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        int64          `json:"id"`
+	TagName   string         `json:"tagName"`
+	Title     string         `json:"title"`
+	Notes     string         `json:"notes"`
+	Author    string         `json:"author"`
+	CreatedAt time.Time      `json:"createdAt"`
+	Assets    []ReleaseAsset `json:"assets"`
+}
+type ReleaseAsset struct {
+	ID          int64  `json:"id"`
+	FileName    string `json:"fileName"`
+	StorageName string `json:"-"`
+	Size        int64  `json:"size"`
+	URL         string `json:"url"`
 }
 type Contributor struct {
 	Username      string `json:"username"`
@@ -129,6 +144,12 @@ type PersonalSettings struct {
 	Location    string `json:"location"`
 	Website     string `json:"website"`
 	AvatarURL   string `json:"avatarUrl"`
+}
+type SSHKey struct {
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	Key       string    `json:"key"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
@@ -428,6 +449,9 @@ func (s *Store) ListIssues(ctx context.Context, repo string) ([]Issue, error) {
 		}
 		out = append(out, v)
 	}
+	for index := range out {
+		out[index].Labels, _ = s.IssueLabels(ctx, out[index].ID)
+	}
 	return out, rows.Err()
 }
 func (s *Store) CreateIssue(ctx context.Context, repo string, user User, title, body string) (Issue, error) {
@@ -441,7 +465,7 @@ func (s *Store) CreateIssue(ctx context.Context, repo string, user User, title, 
 		return Issue{}, err
 	}
 	_ = s.activity(ctx, repo, user.ID, "issue")
-	return Issue{ID: id, Title: strings.TrimSpace(title), Body: strings.TrimSpace(body), State: "open", Author: user.Username, CreatedAt: now, UpdatedAt: now}, nil
+	return Issue{ID: id, Title: strings.TrimSpace(title), Body: strings.TrimSpace(body), State: "open", Author: user.Username, CreatedAt: now, UpdatedAt: now, Labels: []Label{}}, nil
 }
 func (s *Store) Issue(ctx context.Context, repo string, id int64) (Issue, error) {
 	var item Issue
@@ -449,7 +473,78 @@ func (s *Store) Issue(ctx context.Context, repo string, id int64) (Issue, error)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, ErrNotFound
 	}
+	if err == nil {
+		item.Labels, _ = s.IssueLabels(ctx, item.ID)
+	}
 	return item, err
+}
+func (s *Store) Labels(ctx context.Context, repo string) ([]Label, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,color,description FROM labels WHERE repository_name=`+s.arg(1)+` ORDER BY name`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Label{}
+	for rows.Next() {
+		var label Label
+		if err := rows.Scan(&label.ID, &label.Name, &label.Color, &label.Description); err != nil {
+			return nil, err
+		}
+		out = append(out, label)
+	}
+	return out, rows.Err()
+}
+func (s *Store) CreateLabel(ctx context.Context, repo, name, color, description string) (Label, error) {
+	name = strings.TrimSpace(name)
+	color = strings.TrimSpace(color)
+	if name == "" || len(name) > 80 || len(color) != 7 || color[0] != '#' {
+		return Label{}, fmt.Errorf("label name or color is invalid")
+	}
+	q := `INSERT INTO labels (repository_name,name,color,description) VALUES (` + s.args(1, 2, 3, 4) + `)`
+	id, err := s.insertID(ctx, q, repo, name, color, strings.TrimSpace(description))
+	if err != nil {
+		return Label{}, err
+	}
+	return Label{ID: id, Name: name, Color: color, Description: strings.TrimSpace(description)}, nil
+}
+func (s *Store) IssueLabels(ctx context.Context, issueID int64) ([]Label, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT l.id,l.name,l.color,l.description FROM labels l JOIN issue_labels il ON il.label_id=l.id WHERE il.issue_id=`+s.arg(1)+` ORDER BY l.name`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Label{}
+	for rows.Next() {
+		var label Label
+		if err := rows.Scan(&label.ID, &label.Name, &label.Color, &label.Description); err != nil {
+			return nil, err
+		}
+		out = append(out, label)
+	}
+	return out, rows.Err()
+}
+func (s *Store) SetIssueLabels(ctx context.Context, repo string, issueID int64, labelIDs []int64) error {
+	if _, err := s.Issue(ctx, repo, issueID); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id=`+s.arg(1), issueID); err != nil {
+		return err
+	}
+	for _, id := range labelIDs {
+		var count int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM labels WHERE id=`+s.arg(1)+` AND repository_name=`+s.arg(2), id, repo).Scan(&count); err != nil || count == 0 {
+			return ErrNotFound
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO issue_labels (issue_id,label_id) VALUES (`+s.args(1, 2)+`)`, issueID, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 func (s *Store) ListIssueComments(ctx context.Context, repo string, issueID int64) ([]IssueComment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id,u.username,c.body,c.created_at FROM issue_comments c JOIN users u ON u.id=c.author_id WHERE c.repository_name=`+s.arg(1)+` AND c.issue_id=`+s.arg(2)+` ORDER BY c.created_at ASC`, repo, issueID)
@@ -568,6 +663,9 @@ func (s *Store) ListReleases(ctx context.Context, repo string) ([]Release, error
 		}
 		out = append(out, v)
 	}
+	for index := range out {
+		out[index].Assets, _ = s.ReleaseAssets(ctx, out[index].ID)
+	}
 	return out, rows.Err()
 }
 func (s *Store) CreateRelease(ctx context.Context, repo string, user User, tag, title, notes string) (Release, error) {
@@ -581,7 +679,32 @@ func (s *Store) CreateRelease(ctx context.Context, repo string, user User, tag, 
 		return Release{}, err
 	}
 	_ = s.activity(ctx, repo, user.ID, "release")
-	return Release{ID: id, TagName: strings.TrimSpace(tag), Title: strings.TrimSpace(title), Notes: strings.TrimSpace(notes), Author: user.Username, CreatedAt: now}, nil
+	return Release{ID: id, TagName: strings.TrimSpace(tag), Title: strings.TrimSpace(title), Notes: strings.TrimSpace(notes), Author: user.Username, CreatedAt: now, Assets: []ReleaseAsset{}}, nil
+}
+
+func (s *Store) ReleaseAssets(ctx context.Context, releaseID int64) ([]ReleaseAsset, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,file_name,storage_name,size FROM release_assets WHERE release_id=`+s.arg(1)+` ORDER BY id`, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ReleaseAsset{}
+	for rows.Next() {
+		var asset ReleaseAsset
+		if err := rows.Scan(&asset.ID, &asset.FileName, &asset.StorageName, &asset.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, asset)
+	}
+	return out, rows.Err()
+}
+func (s *Store) AddReleaseAsset(ctx context.Context, releaseID int64, fileName, storageName string, size int64) (ReleaseAsset, error) {
+	q := `INSERT INTO release_assets (release_id,file_name,storage_name,size,created_at) VALUES (` + s.args(1, 2, 3, 4, 5) + `)`
+	id, err := s.insertID(ctx, q, releaseID, strings.TrimSpace(fileName), storageName, size, time.Now().UTC())
+	if err != nil {
+		return ReleaseAsset{}, err
+	}
+	return ReleaseAsset{ID: id, FileName: fileName, StorageName: storageName, Size: size}, nil
 }
 
 func (s *Store) DeleteRelease(ctx context.Context, repo string, id int64) error {
@@ -726,6 +849,54 @@ func (s *Store) SetAvatar(ctx context.Context, user User, avatarURL string) (Per
 	}
 	value.AvatarURL = avatarURL
 	return s.UpdatePersonalSettings(ctx, user, value)
+}
+func (s *Store) SSHKeys(ctx context.Context, userID int64) ([]SSHKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,title,key_value,created_at FROM ssh_keys WHERE user_id=`+s.arg(1)+` ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SSHKey{}
+	for rows.Next() {
+		var key SSHKey
+		if err := rows.Scan(&key.ID, &key.Title, &key.Key, &key.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
+}
+func (s *Store) AddSSHKey(ctx context.Context, user User, title, value string) (SSHKey, error) {
+	title = strings.TrimSpace(title)
+	value = strings.TrimSpace(value)
+	if title == "" || value == "" {
+		return SSHKey{}, fmt.Errorf("key title and public key are required")
+	}
+	q := `INSERT INTO ssh_keys (user_id,title,key_value,created_at) VALUES (` + s.args(1, 2, 3, 4) + `)`
+	id, err := s.insertID(ctx, q, user.ID, title, value, time.Now().UTC())
+	if err != nil {
+		return SSHKey{}, err
+	}
+	return SSHKey{ID: id, Title: title, Key: value, CreatedAt: time.Now().UTC()}, nil
+}
+func (s *Store) DeleteSSHKey(ctx context.Context, userID, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM ssh_keys WHERE id=`+s.arg(1)+` AND user_id=`+s.arg(2), id, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+func (s *Store) UserBySSHKey(ctx context.Context, value string) (User, error) {
+	var user User
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.email,u.is_admin,u.email_verified,u.created_at FROM ssh_keys k JOIN users u ON u.id=k.user_id WHERE k.key_value=`+s.arg(1), strings.TrimSpace(value)).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return user, err
 }
 func (s *Store) ToggleUserFollow(ctx context.Context, follower User, username string) (bool, int, error) {
 	target, err := s.UserByUsername(ctx, username)
