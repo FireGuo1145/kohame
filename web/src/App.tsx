@@ -514,7 +514,7 @@ function VerifyPage({ onDone }: { onDone: () => void }) {
 
 function WorkHome({ user, repos, onOpen }: { user: User | null; repos: Repository[]; onOpen: (name: string) => void }) {
   const mine = user ? repos.filter((repo) => repo.scope === user.username) : []
-  return <div className="mx-auto max-w-7xl px-5 py-9"><div className="mb-8 flex items-end justify-between"><div><p className="text-sm font-medium text-emerald-700">你的工作主页</p><h1 className="text-3xl font-semibold tracking-tight">{user ? `欢迎回来，${user.username}` : "登录后查看工作台"}</h1><p className="mt-2 text-sm text-zinc-500">跟进自己拥有的项目、通知和组织协作。</p></div></div>{user ? <div className="grid gap-5 md:grid-cols-3"><Stat icon={<FolderGit2 />} label="个人仓库" value={String(mine.length)} /><Stat icon={<Star />} label="获得 Star" value={String(mine.reduce((total, repo) => total + repo.stars, 0))} /><Stat icon={<GitPullRequest />} label="可继续协作" value="Issues & PR" /></div> : null}<section className="mt-8"><h2 className="mb-3 font-semibold">最近仓库</h2><RepoCards repos={user ? mine : repos.slice(0, 6)} onOpen={onOpen} /></section></div>
+  return <div className="mx-auto max-w-7xl px-5 py-9"><div className="mb-8 flex items-end justify-between"><div><p className="text-sm font-medium text-emerald-700">你的工作主页</p><h1 className="text-3xl font-semibold tracking-tight">{user ? `欢迎回来，${user.username}` : "登录后查看工作台"}</h1><p className="mt-2 text-sm text-zinc-500">跟进自己拥有的项目、通知和组织协作。</p></div></div>{user ? <div className="grid gap-5 md:grid-cols-3"><Stat icon={<FolderGit2 />} label="个人仓库" value={String(mine.length)} /><Stat icon={<Star />} label="获得 Star" value={String(mine.reduce((total, repo) => total + repo.stars, 0))} /><Stat icon={<GitPullRequest />} label="可继续协作" value="议题与拉取请求" /></div> : null}<section className="mt-8"><h2 className="mb-3 font-semibold">最近仓库</h2><RepoCards repos={user ? mine : repos.slice(0, 6)} onOpen={onOpen} /></section></div>
 }
 
 function ProfilePage({ username, currentUser, onOpen }: { username: string; currentUser: User | null; onOpen: (name: string) => void }) {
@@ -529,7 +529,7 @@ function ProfilePage({ username, currentUser, onOpen }: { username: string; curr
 function OrganizationPage({ name, onOpen }: { name: string; onOpen: (name: string) => void }) {
   const [org,setOrg]=useState<Organization|null>(null);const[members,setMembers]=useState<OrganizationMember[]>([]);const[repos,setRepos]=useState<Repository[]>([]);const[message,setMessage]=useState("")
   useEffect(()=>{void Promise.all([api<Organization>(`/api/organizations/${name}`),api<OrganizationMember[]>(`/api/organizations/${name}/members`),api<Repository[]>(`/api/organizations/${name}/repos`)]).then(([o,m,r])=>{setOrg(o);setMembers(m);setRepos(r)}).catch((cause:unknown)=>setMessage(cause instanceof Error?cause.message:"无法加载组织主页。"))},[name])
-  if(message)return <PageMessage title="组织主页" message={message}/>;if(!org)return <Loading/>;return <div className="mx-auto max-w-7xl px-5 py-9"><section className="flex items-center gap-4 rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><span className="grid size-16 place-items-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-950"><Building2 /></span><div><h1 className="text-2xl font-semibold">{org.name}</h1><p className="mt-1 text-sm text-zinc-500">组织主页 · {members.length} 位成员</p></div></section><div className="mt-8 grid gap-8 lg:grid-cols-[1fr_280px]"><section><h2 className="mb-3 font-semibold">Repositories</h2><RepoCards repos={repos} onOpen={onOpen}/></section><aside><h2 className="mb-3 font-semibold">Members</h2><div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">{members.map(member=><div key={member.username} className="flex items-center justify-between border-b border-zinc-100 p-3 text-sm last:border-0 dark:border-zinc-800"><span className="flex items-center gap-2"><Avatar name={member.username}/>{member.username}</span><span className="text-xs text-zinc-500">{member.role}</span></div>)}</div></aside></div></div>
+  if(message)return <PageMessage title="组织主页" message={message}/>;if(!org)return <Loading/>;return <div className="mx-auto max-w-7xl px-5 py-9"><section className="flex items-center gap-4 rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"><span className="grid size-16 place-items-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-950"><Building2 /></span><div><h1 className="text-2xl font-semibold">{org.name}</h1><p className="mt-1 text-sm text-zinc-500">组织主页 · {members.length} 位成员</p></div></section><div className="mt-8 grid gap-8 lg:grid-cols-[1fr_280px]"><section><h2 className="mb-3 font-semibold">仓库</h2><RepoCards repos={repos} onOpen={onOpen}/></section><aside><h2 className="mb-3 font-semibold">成员</h2><div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">{members.map(member=><div key={member.username} className="flex items-center justify-between border-b border-zinc-100 p-3 text-sm last:border-0 dark:border-zinc-800"><span className="flex items-center gap-2"><Avatar name={member.username}/>{member.username}</span><span className="text-xs text-zinc-500">{member.role}</span></div>)}</div></aside></div></div>
 }
 
 function NotificationPage({ onOpen }: { onOpen: (link: string) => void }) {
@@ -537,7 +537,7 @@ function NotificationPage({ onOpen }: { onOpen: (link: string) => void }) {
   return <div className="mx-auto max-w-3xl px-5 py-9"><h1 className="text-2xl font-semibold">通知</h1><p className="mt-1 text-sm text-zinc-500">Star、Fork 和仓库协作的最新动态。</p>{message?<p className="mt-5 rounded-xl bg-red-50 p-4 text-sm text-red-700">{message}</p>:<div className="mt-6 overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">{items.length?items.map(item=><button key={item.id} onClick={async()=>{if(!item.isRead){await api<void>(`/api/notifications/${item.id}/read`,{method:"PATCH"});setItems(items.map(value=>value.id===item.id?{...value,isRead:true}:value))}onOpen(item.link)}} className={`block w-full border-b border-zinc-100 p-4 text-left last:border-0 dark:border-zinc-800 ${item.isRead?"":"bg-emerald-50/60 dark:bg-emerald-950/20"}`}><strong className="text-sm">{item.title}</strong><p className="mt-1 text-sm text-zinc-500">{item.body} · {when(item.createdAt)}</p></button>):<Empty icon={<Bell/>} title="还没有通知" text="仓库的新 Star、Fork 和协作动态会显示在这里。"/>}</div>}</div>
 }
 
-function RepoCards({ repos, onOpen }: { repos: Repository[]; onOpen: (name: string) => void }) { return <div className="grid gap-3 md:grid-cols-2">{repos.length?repos.map(repo=><button key={repo.fullName} onClick={()=>onOpen(repo.fullName)} className="rounded-xl border border-zinc-200 bg-white p-4 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900"><span className="flex items-center justify-between gap-3"><strong className="truncate text-sm text-sky-700 dark:text-sky-300"><FolderGit2 className="mr-1 inline size-4"/>{repo.fullName}</strong><span className="text-xs text-zinc-500"><Star className="mr-1 inline size-3"/>{repo.stars}</span></span><p className="mt-3 text-xs text-zinc-500">更新于 {when(repo.updatedAt)}{repo.forkedFrom?` · forked from ${repo.forkedFrom}`:""}</p></button>):<div className="col-span-full rounded-xl border border-dashed border-zinc-300 p-7 text-center text-sm text-zinc-500">暂无仓库。</div>}</div> }
+function RepoCards({ repos, onOpen }: { repos: Repository[]; onOpen: (name: string) => void }) { return <div className="grid gap-3 md:grid-cols-2">{repos.length?repos.map(repo=><button key={repo.fullName} onClick={()=>onOpen(repo.fullName)} className="rounded-xl border border-zinc-200 bg-white p-4 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900"><span className="flex items-center justify-between gap-3"><strong className="truncate text-sm text-sky-700 dark:text-sky-300"><FolderGit2 className="mr-1 inline size-4"/>{repo.fullName}</strong><span className="text-xs text-zinc-500"><Star className="mr-1 inline size-3"/>{repo.stars}</span></span><p className="mt-3 text-xs text-zinc-500">更新于 {when(repo.updatedAt)}{repo.forkedFrom?` · 派生自 ${repo.forkedFrom}`:""}</p></button>):<div className="col-span-full rounded-xl border border-dashed border-zinc-300 p-7 text-center text-sm text-zinc-500">暂无仓库。</div>}</div> }
 function Avatar({name,size="sm"}:{name:string;size?:"sm"|"lg"}){return <span className={`${size==="lg"?"size-16 text-2xl":"size-7 text-xs"} grid shrink-0 place-items-center rounded-full bg-zinc-900 font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900`}>{name.slice(0,1).toUpperCase()}</span>}
 function Stat({icon,label,value}:{icon:ReactNode;label:string;value:string}){return <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"><span className="text-zinc-500">{icon}</span><strong className="mt-4 block text-2xl">{value}</strong><span className="text-sm text-zinc-500">{label}</span></div>}
 function Loading(){return <main className="grid min-h-[50svh] place-items-center text-sm text-zinc-500">加载中…</main>}
@@ -857,7 +857,7 @@ function RepositoryView({
         {tab === "tags" && <RepositoryList name={name} kind="tags" />}
         {tab === "issues" && (
           <WorkList
-            title="Issues"
+            title="议题"
             items={issues}
             user={user}
             fields={["title", "body"]}
@@ -880,7 +880,7 @@ function RepositoryView({
         )}
         {tab === "pulls" && (
           <WorkList
-            title="Pull requests"
+            title="拉取请求"
             items={pulls}
             user={user}
             fields={["title", "sourceBranch", "targetBranch", "body"]}
@@ -903,7 +903,7 @@ function RepositoryView({
         )}
         {tab === "releases" && (
           <WorkList
-            title="Releases"
+            title="发布版本"
             items={releases}
             user={user}
             fields={["tagName", "title", "notes"]}
