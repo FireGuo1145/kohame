@@ -1273,6 +1273,12 @@ function WorkList<T extends { id: number }>({
   const [deleting, setDeleting] = useState<number | null>(null)
   const [editing, setEditing] = useState<number | null>(null)
   const [state, setState] = useState("open")
+  const [filter, setFilter] = useState("")
+  const visibleItems = items.filter((item) => {
+    const value = item as T & { title?: string; author?: string; state?: string }
+    const needle = filter.trim().toLowerCase()
+    return !needle || `${value.title || ""} ${value.author || ""} ${value.state || ""}`.toLowerCase().includes(needle)
+  })
   return (
     <>
       <div className="mb-4 flex items-center justify-between">
@@ -1331,9 +1337,10 @@ function WorkList<T extends { id: number }>({
           </form>
         </Modal>
       )}
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={`筛选${title}（标题、作者或状态）`} className="h-8 min-w-52 flex-1 bg-transparent px-2 text-sm outline-none"/><span className="text-xs text-zinc-500">{visibleItems.length} 项结果</span></div>
       <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        {items.length ? (
-          items.map((item) => (
+        {visibleItems.length ? (
+          visibleItems.map((item) => (
             <article
               key={item.id}
               className="border-b border-zinc-100 px-5 py-4 last:border-0 dark:border-zinc-800"
@@ -1371,11 +1378,11 @@ function WorkList<T extends { id: number }>({
         ) : (
           <Empty
             icon={<GitPullRequest />}
-            title={`No ${title.toLowerCase()} yet`}
+            title={`暂无${title}`}
             text={
               user
-                ? `Create the first ${title.slice(0, -1).toLowerCase()}.`
-                : "Sign in to contribute."
+                ? `创建第一个${title.slice(0, -1)}。`
+                : "登录后参与协作。"
             }
           />
         )}
