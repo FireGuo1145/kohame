@@ -1,0 +1,12 @@
+server:
+  addr: ":3000"
+
+storage:
+  # Bare Git repositories are stored here. Relative paths are based on this file.
+  repository_root: data/repos
+
+database:
+  # Supported values: sqlite, pgsql
+  driver: sqlite
+  # For sqlite this is a filesystem path. For pgsql use a PostgreSQL DSN.
+  dsn: data/kohame.db

@@ -6,7 +6,13 @@ import { defineConfig } from "vite"
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  resolve: {
+	server: {
+		proxy: {
+			"/api": "http://localhost:3000",
+			"/git": "http://localhost:3000",
+		},
+	},
+	resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
