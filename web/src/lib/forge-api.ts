@@ -16,7 +16,7 @@ export const when = (date: string) =>
   new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(date))
 
 export const defaultSiteSettings: SiteSettings = {
-  title: "Kohame", description: "Self-hosted Git, kept simple", allowRegistration: true,
+  title: "Kohame", description: "简洁自托管的 Git 代码协作平台", allowRegistration: true,
   smtpHost: "", smtpPort: "587", smtpUsername: "", smtpPassword: "", smtpFrom: "",
   captchaEnabled: false, captchaSiteKey: "", captchaSecret: "", repositoryRoot: "",
 }

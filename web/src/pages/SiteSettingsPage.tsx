@@ -21,7 +21,7 @@ export default function SiteSettingsPage({ site, onSaved }: { site: SiteSettings
   const [message, setMessage] = useState("")
 
   useEffect(() => {
-    void api<SiteSettings>("/api/admin/settings").then(setValue).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load settings."))
+    void api<SiteSettings>("/api/admin/settings").then(setValue).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载设置。"))
   }, [])
 
   const submit = async (event: FormEvent) => {
@@ -32,7 +32,7 @@ export default function SiteSettingsPage({ site, onSaved }: { site: SiteSettings
       onSaved(saved)
       setMessage("设置已保存。")
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Could not save settings.")
+      setMessage(cause instanceof Error ? cause.message : "无法保存设置。")
     }
   }
 

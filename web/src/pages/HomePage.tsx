@@ -20,6 +20,7 @@ export default function HomePage({
   onOpen: (name: string) => void
   onOrganization: (name: string) => void
 }) {
+  const siteDescription = site.description === "Self-hosted Git, kept simple" ? "简洁自托管的 Git 代码协作平台" : site.description
   const [scope, setScope] = useState(user?.username ?? "")
   const [name, setName] = useState("")
   const [organizationName, setOrganizationName] = useState("")
@@ -37,7 +38,7 @@ export default function HomePage({
       onOpen(repo.fullName)
     } catch (cause) {
       setMessage(
-        cause instanceof Error ? cause.message : "Could not create repository."
+        cause instanceof Error ? cause.message : "无法创建仓库。"
       )
     }
   }
@@ -50,7 +51,7 @@ export default function HomePage({
       })
       onOrganization(organization.name)
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Could not create organization.")
+      setMessage(cause instanceof Error ? cause.message : "无法创建组织。")
     }
   }
   return (
@@ -58,7 +59,7 @@ export default function HomePage({
       <section className="grid gap-6 border-b border-zinc-200 pb-7 dark:border-zinc-800 lg:grid-cols-[minmax(0,1fr)_280px]">
         <div>
           <p className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300"><span className="size-1.5 rounded-full bg-emerald-500" />代码协作空间</p>
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{site.description}</h1>
+          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{siteDescription}</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">所有仓库、议题与发布流程汇聚在一个安静、清晰的工作区里。</p>
         </div>
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 text-sm dark:border-zinc-800 dark:bg-zinc-800">

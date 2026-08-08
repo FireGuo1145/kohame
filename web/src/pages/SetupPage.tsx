@@ -31,7 +31,7 @@ export default function SetupPage({
         })
       )
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Setup failed.")
+      setMessage(cause instanceof Error ? cause.message : "初始化失败。")
     } finally {
       setBusy(false)
     }
@@ -46,14 +46,13 @@ export default function SetupPage({
           <GitBranch />
         </span>
         <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
-          Welcome to Kohame
+          欢迎使用 Kohame
         </p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-          Create the site administrator
+          创建站点管理员
         </h1>
         <p className="mt-2 text-sm leading-6 text-zinc-500">
-          This one-time setup secures your new Git forge. You can change site
-          settings after signing in.
+          完成一次性初始化以保护你的 Git 代码协作平台。登录后可随时调整站点设置。
         </p>
         <div className="mt-6 space-y-3">
           <Field
@@ -85,7 +84,7 @@ export default function SetupPage({
           isPending={busy}
         >
           <KeyRound />
-          Finish setup
+          完成初始化
         </Button>
       </form>
     </main>
@@ -128,7 +127,7 @@ export function AuthMenu({
       onUser(user)
       setMode(null)
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Could not continue.")
+      setMessage(cause instanceof Error ? cause.message : "操作无法继续。")
     }
   }
   if (!mode)
@@ -136,12 +135,12 @@ export function AuthMenu({
       <div className="flex gap-1">
         <Button variant="ghost" size="sm" onPress={() => setMode("login")}>
           <LogIn />
-          Sign in
+          登录
         </Button>
         {site.allowRegistration && (
           <Button size="sm" onPress={() => setMode("register")}>
             <UserPlus />
-            Register
+          注册
           </Button>
         )}
       </div>
@@ -223,4 +222,3 @@ function HCaptcha({ onToken }: { onToken: (token: string) => void }) {
   }, [config, onToken])
   return config?.enabled ? <div ref={host} className="pt-1" /> : null
 }
-

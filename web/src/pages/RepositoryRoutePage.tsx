@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Settings, Star, Tag, Users, X } from "lucide-react"
+import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, Star, Tag, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
@@ -49,13 +49,13 @@ function RepositoryView({
   useEffect(() => {
     void load().catch((cause: unknown) =>
       setMessage(
-        cause instanceof Error ? cause.message : "Could not load repository."
+        cause instanceof Error ? cause.message : "无法加载仓库。"
       )
     )
   }, [name])
   const add = async (kind: string, value: Record<string, string>) => {
     if (!user) {
-      setMessage("Sign in to contribute.")
+      setMessage("登录后即可参与协作。")
       return false
     }
     try {
@@ -69,7 +69,7 @@ function RepositoryView({
       return true
     } catch (cause) {
       setMessage(
-        cause instanceof Error ? cause.message : "Could not save item."
+        cause instanceof Error ? cause.message : "无法保存内容。"
       )
       return false
     }
@@ -82,7 +82,7 @@ function RepositoryView({
       await load()
     } catch (cause) {
       setMessage(
-        cause instanceof Error ? cause.message : "Could not delete item."
+        cause instanceof Error ? cause.message : "无法删除内容。"
       )
     }
   }
@@ -95,19 +95,19 @@ function RepositoryView({
       await load()
     } catch (cause) {
       setMessage(
-        cause instanceof Error ? cause.message : "Could not update item."
+        cause instanceof Error ? cause.message : "无法更新内容。"
       )
     }
   }
   const tabs = [
-    ["code", "Code", <Code2 />],
-    ["commits", "Commits", <GitCommitHorizontal />],
-    ["issues", "Issues", <CircleDot />],
-    ["pulls", "Pull requests", <GitPullRequest />],
-    ["branches", "Branches", <GitBranch />],
-    ["tags", "Tags", <Tag />],
-    ["releases", "Releases", <Tag />],
-    ["settings", "Settings", <Settings />],
+    ["code", "代码", <Code2 />],
+    ["commits", "提交记录", <GitCommitHorizontal />],
+    ["issues", "议题", <CircleDot />],
+    ["pulls", "拉取请求", <GitPullRequest />],
+    ["branches", "分支", <GitBranch />],
+    ["tags", "标签", <Tag />],
+    ["releases", "发布版本", <Tag />],
+    ["settings", "设置", <Settings />],
   ] as const
   const openTab = (value: string) => navigate(value === "code" ? `/${name}` : `/${name}/${value}`)
   return (
@@ -125,13 +125,13 @@ function RepositoryView({
           </span>
           <div>
             <h1 className="text-xl font-semibold">{name}</h1>
-            <p className="text-sm text-zinc-500">A Git repository</p>
+            <p className="text-sm text-zinc-500">Git 仓库</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onPress={() => setForkOpen(true)} isDisabled={!user}><GitBranch /> 派生 {repository?.forks ?? 0}</Button>
           <Button variant={repository?.starred ? "secondary" : "outline"} size="sm" isDisabled={!user} onPress={async()=>{try{const result=await api<{starred:boolean;stars:number}>(`/api/repos/${name}/star`,{method:"POST"});setRepository(repository?{...repository,...result}:repository)}catch(cause){setMessage(cause instanceof Error?cause.message:"无法更新 Star。")}}}><Star className={repository?.starred?"fill-current":""} /> 收藏 {repository?.stars ?? 0}</Button>
-          <Button variant="outline" size="sm" onPress={() => void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`)}><Copy /> Clone</Button>
+          <Button variant="outline" size="sm" onPress={() => void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`)}><Copy /> 克隆</Button>
         </div>
       </div>
       {repository?.forkedFrom && <p className="mt-3 text-sm text-zinc-500">派生自 <span className="font-medium text-sky-700 dark:text-sky-300">{repository.forkedFrom}</span></p>}
@@ -164,7 +164,7 @@ function RepositoryView({
             items={issues}
             user={user}
             fields={["title", "body"]}
-            button="New issue"
+            button="新建议题"
             onNew={() => navigate(`/${name}/issues/new`)}
             onSubmit={(v) => add("issue", v)}
             onDelete={(id) => remove("issues", id)}
@@ -192,7 +192,7 @@ function RepositoryView({
             items={releases}
             user={user}
             fields={["tagName", "title", "notes"]}
-            button="Publish release"
+            button="发布版本"
             onSubmit={(v) => add("release", v)}
             onDelete={(id) => remove("releases", id)}
             render={(item) => (
@@ -231,8 +231,8 @@ function RepositoryView({
             ) : (
               <Empty
                 icon={<Users />}
-                title="No contributions yet"
-                text="Issues, pull requests, and releases will appear here."
+                title="暂无贡献记录"
+                text="议题、拉取请求和发布版本会显示在这里。"
               />
             )}
           </div>
@@ -240,7 +240,7 @@ function RepositoryView({
         {tab === "settings" && <RepositorySettingsPanel name={name} />}
       </section>
       {forkOpen && (
-        <Modal title="Fork repository" onClose={() => setForkOpen(false)}>
+        <Modal title="派生仓库" onClose={() => setForkOpen(false)}>
           <form
             className="space-y-4"
             onSubmit={async (event) => {
@@ -253,7 +253,7 @@ function RepositoryView({
                 setForkOpen(false)
                 onOpen(repo.fullName)
               } catch (cause) {
-                setMessage(cause instanceof Error ? cause.message : "Fork failed.")
+                setMessage(cause instanceof Error ? cause.message : "派生失败。")
               }
             }}
           >
@@ -278,6 +278,9 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
   const [ref, setRef] = useState("HEAD")
   const [filter, setFilter] = useState("")
   const [copied, setCopied] = useState(false)
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false)
+  const [codeMenuOpen, setCodeMenuOpen] = useState(false)
+  const [branchQuery, setBranchQuery] = useState("")
   const [message, setMessage] = useState("")
   useEffect(() => {
     void api<TreeEntry[]>(
@@ -288,9 +291,9 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
       })
       .catch((cause: unknown) =>
         setMessage(
-          cause instanceof Error
+            cause instanceof Error
             ? cause.message
-            : "Could not read repository tree."
+            : "无法读取仓库目录。"
         )
       )
   }, [name, directory, ref])
@@ -304,7 +307,7 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
     ]).then(([nextBranches, nextCommits, nextSettings, nextReleases, nextContributors]) => {
       setBranches(nextBranches); setCommits(nextCommits); setSettings(nextSettings); setReleases(nextReleases); setContributors(nextContributors)
       if (ref === "HEAD" && nextBranches[0]) setRef(nextBranches.some((branch) => branch.name === nextSettings.defaultBranch) ? nextSettings.defaultBranch : nextBranches[0].name)
-    }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load repository overview."))
+    }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载仓库概览。"))
   }, [name, ref])
   const openEntry = (entry: TreeEntry) => {
     if (entry.type === "tree") {
@@ -319,21 +322,24 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_250px]">
       <div className="min-w-0">
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <label className="relative"><GitBranch className="pointer-events-none absolute left-3 top-2.5 size-4 text-zinc-500" /><select value={ref} onChange={(event) => { setRef(event.target.value); setDirectory("") }} className="h-9 min-w-32 appearance-none rounded-lg border border-zinc-300 bg-white py-0 pl-9 pr-8 text-sm font-medium shadow-sm outline-none dark:border-zinc-700 dark:bg-zinc-900">{branches.length ? branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>) : <option value="HEAD">HEAD</option>}</select><ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-zinc-500" /></label>
-          <span className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 dark:text-zinc-400"><GitBranch className="size-4" />{branches.length} branches</span>
-          <span className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 dark:text-zinc-400"><Tag className="size-4" />{releases.length} releases</span>
-          <label className="ml-auto flex h-9 min-w-48 flex-1 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 text-zinc-400 shadow-sm sm:max-w-72 dark:border-zinc-700 dark:bg-zinc-900"><ListFilter className="size-4" /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Go to file" className="w-full bg-transparent text-sm text-zinc-900 outline-none dark:text-zinc-100" /></label>
-          <Button variant="outline" size="sm" onPress={() => { void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`); setCopied(true) }}><Code2 />{copied ? "Copied" : "Code"}</Button>
+        <div className="relative mb-4 flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Button variant="outline" size="sm" aria-expanded={branchMenuOpen} onPress={() => { setBranchMenuOpen(!branchMenuOpen); setCodeMenuOpen(false) }}><GitBranch /> {ref === "HEAD" ? "默认分支" : ref}<ChevronDown /></Button>
+            {branchMenuOpen && <div className="absolute left-0 top-10 z-20 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 text-zinc-100 shadow-2xl"><div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3"><strong>切换分支或标签</strong><button onClick={() => setBranchMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><label className="m-3 flex h-9 items-center gap-2 rounded-lg border border-zinc-700 px-2.5 text-zinc-400"><Search className="size-4" /><input value={branchQuery} onChange={(event) => setBranchQuery(event.target.value)} placeholder="查找或创建分支..." className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-zinc-500" /></label><div className="flex border-y border-zinc-800"><span className="border-b-2 border-emerald-400 px-4 py-2 text-sm font-medium">分支</span><span className="px-4 py-2 text-sm text-zinc-400">标签</span></div><div className="max-h-52 overflow-auto p-2">{branches.filter((branch) => branch.name.toLowerCase().includes(branchQuery.toLowerCase())).map((branch) => <button key={branch.name} onClick={() => { setRef(branch.name); setDirectory(""); setBranchMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-900"><Check className={`size-4 ${ref === branch.name ? "text-emerald-400" : "text-transparent"}`} />{branch.name}{branch.name === settings?.defaultBranch && <span className="ml-auto rounded-full border border-zinc-600 px-2 py-0.5 text-xs text-zinc-300">默认</span>}</button>)}{!branches.length && <p className="px-3 py-4 text-sm text-zinc-500">暂无分支</p>}</div><button onClick={() => setBranchMenuOpen(false)} className="w-full border-t border-zinc-800 px-4 py-3 text-left text-sm text-sky-400 hover:bg-zinc-900">查看所有分支</button></div>}
+          </div>
+          <button className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"><GitBranch className="size-4" />{branches.length} 个分支</button>
+          <button className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"><Tag className="size-4" />{releases.length} 个发布</button>
+          <label className="ml-auto flex h-9 min-w-48 flex-1 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 text-zinc-400 shadow-sm sm:max-w-72 dark:border-zinc-700 dark:bg-zinc-900"><ListFilter className="size-4" /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="转到文件" className="w-full bg-transparent text-sm text-zinc-900 outline-none dark:text-zinc-100" /></label>
+          <div className="relative"><Button variant="outline" size="sm" aria-expanded={codeMenuOpen} onPress={() => { setCodeMenuOpen(!codeMenuOpen); setBranchMenuOpen(false) }}><Code2 />{copied ? "已复制" : "代码"}<ChevronDown /></Button>{codeMenuOpen && <div className="absolute right-0 top-10 z-20 w-80 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-zinc-100 shadow-2xl"><div className="mb-3 flex items-center justify-between"><strong>克隆仓库</strong><button onClick={() => setCodeMenuOpen(false)} aria-label="关闭"><X className="size-4 text-zinc-400" /></button></div><div className="mb-3 flex gap-1 rounded-lg border border-zinc-700 p-1 text-sm"><span className="rounded-md bg-zinc-700 px-3 py-1.5 font-medium">HTTPS</span><span className="px-3 py-1.5 text-zinc-400">SSH</span></div><div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 p-2"><code className="min-w-0 flex-1 truncate text-xs text-zinc-300">{window.location.origin}/{name}.git</code><button onClick={() => { void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`); setCopied(true) }} aria-label="复制克隆地址"><Copy className="size-4 text-zinc-400" /></button></div><p className="mt-3 text-xs text-zinc-500">使用网页地址克隆此仓库。</p><div className="mt-4 space-y-1 border-t border-zinc-800 pt-3 text-sm"><button className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><GitBranch className="size-4" />在桌面客户端中打开</button><button className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-zinc-900"><FolderGit2 className="size-4" />下载 ZIP</button></div></div>}</div>
         </div>
         {message && <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50">{message}</p>}
         <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-          <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{latestCommit?.author.slice(0, 1).toUpperCase() || "K"}</span><span className="min-w-0 flex-1 truncate"><strong className="font-medium">{latestCommit?.author || "No commits yet"}</strong>{latestCommit && <span className="ml-2 text-zinc-500">{latestCommit.subject}</span>}</span>{latestCommit && <span className="hidden text-xs text-zinc-500 sm:block">{latestCommit.hash} · {when(latestCommit.date)}</span>}</div>
+          <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{latestCommit?.author.slice(0, 1).toUpperCase() || "K"}</span><span className="min-w-0 flex-1 truncate"><strong className="font-medium">{latestCommit?.author || "暂无提交"}</strong>{latestCommit && <span className="ml-2 text-zinc-500">{latestCommit.subject}</span>}</span>{latestCommit && <span className="hidden text-xs text-zinc-500 sm:block">{latestCommit.hash} · {when(latestCommit.date)}</span>}</div>
           {directory && <div className="flex items-center gap-1 border-b border-zinc-100 px-4 py-2 text-sm text-zinc-500 dark:border-zinc-800"><button onClick={() => setDirectory("")} className="text-sky-700 hover:underline dark:text-sky-300">{name}</button>{crumbs.map((crumb, index) => <span key={`${crumb}-${index}`}><span className="mx-1 text-zinc-400">/</span><button onClick={() => setDirectory(crumbs.slice(0, index + 1).join("/"))} className="hover:underline">{crumb}</button></span>)}</div>}
-          {visibleEntries.length ? visibleEntries.map((entry) => <button key={entry.path} onClick={() => openEntry(entry)} className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"><span className={`grid size-5 place-items-center ${entry.type === "tree" ? "text-amber-600" : "text-zinc-500"}`}>{entry.type === "tree" ? <FolderGit2 className="size-4" /> : <FileCode2 className="size-4" />}</span><span className="font-medium text-sky-700 dark:text-sky-300">{entry.name}</span><span className="ml-auto text-xs text-zinc-400">{entry.type === "tree" ? "directory" : "file"}</span></button>) : <Empty icon={<FolderGit2 />} title="No files on this branch" text="Push a commit to browse its source code here." />}
+          {visibleEntries.length ? visibleEntries.map((entry) => <button key={entry.path} onClick={() => openEntry(entry)} className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"><span className={`grid size-5 place-items-center ${entry.type === "tree" ? "text-amber-600" : "text-zinc-500"}`}>{entry.type === "tree" ? <FolderGit2 className="size-4" /> : <FileCode2 className="size-4" />}</span><span className="font-medium text-sky-700 dark:text-sky-300">{entry.name}</span><span className="ml-auto text-xs text-zinc-400">{entry.type === "tree" ? "目录" : "文件"}</span></button>) : <Empty icon={<FolderGit2 />} title="此分支暂无文件" text="推送一次提交后即可在这里浏览源代码。" />}
         </div>
       </div>
-      <aside className="border-t border-zinc-200 pt-5 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6 xl:pt-0"><h2 className="font-semibold">About</h2><p className="mt-3 text-sm leading-6 text-zinc-500">{settings?.description || "No description, website, or topics provided."}</p>{settings?.topics.length ? <div className="mt-4 flex flex-wrap gap-1.5">{settings.topics.map((topic) => <span key={topic} className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">{topic}</span>)}</div> : null}<div className="mt-5 space-y-3 border-b border-zinc-200 pb-5 text-sm dark:border-zinc-800"><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><GitCommitHorizontal className="size-4" />{commits.length} recent commits</p><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><Users className="size-4" />{contributors.length} contributors</p></div>{releases.length ? <div className="pt-5"><h3 className="font-semibold">Releases</h3>{releases.slice(0, 2).map((release) => <div key={release.id} className="mt-3"><p className="flex items-center gap-1 text-sm font-medium text-emerald-700 dark:text-emerald-300"><Tag className="size-3.5" />{release.tagName}</p><p className="mt-1 text-xs text-zinc-500">{release.title}</p></div>)}</div> : null}</aside>
+      <aside className="border-t border-zinc-200 pt-5 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6 xl:pt-0"><h2 className="font-semibold">关于</h2><p className="mt-3 text-sm leading-6 text-zinc-500">{settings?.description || "暂无项目简介、网站或主题。"}</p>{settings?.topics.length ? <div className="mt-4 flex flex-wrap gap-1.5">{settings.topics.map((topic) => <span key={topic} className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">{topic}</span>)}</div> : null}<div className="mt-5 space-y-3 border-b border-zinc-200 pb-5 text-sm dark:border-zinc-800"><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><GitCommitHorizontal className="size-4" />{commits.length} 次近期提交</p><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><Users className="size-4" />{contributors.length} 位贡献者</p></div>{releases.length ? <div className="pt-5"><h3 className="font-semibold">发布版本</h3>{releases.slice(0, 2).map((release) => <div key={release.id} className="mt-3"><p className="flex items-center gap-1 text-sm font-medium text-emerald-700 dark:text-emerald-300"><Tag className="size-3.5" />{release.tagName}</p><p className="mt-1 text-xs text-zinc-500">{release.title}</p></div>)}</div> : null}</aside>
     </div>
   )
 }
@@ -341,9 +347,9 @@ function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: st
 function FilePreview({ name, path, onBack }: { name: string; path: string; onBack: () => void }) {
   const [file, setFile] = useState<Blob | null>(null)
   const [message, setMessage] = useState("")
-  useEffect(() => { void api<Blob>(`/api/repos/${name}/blob?path=${encodeURIComponent(path)}`).then(setFile).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not read file.")) }, [name, path])
+  useEffect(() => { void api<Blob>(`/api/repos/${name}/blob?path=${encodeURIComponent(path)}`).then(setFile).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法读取文件。")) }, [name, path])
   if (!file && !message) return <Loading />
-  return <div className="mx-auto max-w-6xl"><button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />返回文件列表</button><div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><FileCode2 className="size-4 text-zinc-500" /><span className="font-medium">{path}</span></header>{message ? <p className="p-4 text-sm text-red-600">{message}</p> : file?.isText ? <pre className="max-h-[calc(100svh-15rem)] overflow-auto bg-zinc-950 p-5 text-xs leading-6 text-zinc-100"><code>{file.content}</code></pre> : <div className="grid min-h-64 place-items-center p-6 text-sm text-zinc-500">Binary file preview is unavailable.</div>}</div></div>
+  return <div className="mx-auto max-w-6xl"><button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />返回文件列表</button><div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><FileCode2 className="size-4 text-zinc-500" /><span className="font-medium">{path}</span></header>{message ? <p className="p-4 text-sm text-red-600">{message}</p> : file?.isText ? <pre className="max-h-[calc(100svh-15rem)] overflow-auto bg-zinc-950 p-5 text-xs leading-6 text-zinc-100"><code>{file.content}</code></pre> : <div className="grid min-h-64 place-items-center p-6 text-sm text-zinc-500">暂不支持预览二进制文件。</div>}</div></div>
 }
 
 function RepositoryList({
@@ -515,27 +521,27 @@ function IssueComposer({
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_250px]">
       <form className="min-w-0" onSubmit={async (event) => {
         event.preventDefault()
-        if (!user) { setMessage("Sign in to create an issue."); return }
+        if (!user) { setMessage("请先登录再创建议题。 "); return }
         setSaving(true); setMessage("")
-        try { await onSubmit({ title, body }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not create issue.") } finally { setSaving(false) }
+        try { await onSubmit({ title, body }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法创建议题。") } finally { setSaving(false) }
       }}>
-        <h1 className="mb-5 text-2xl font-semibold">Create new issue</h1>
-        <input autoFocus required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Title" className="h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm shadow-sm outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-100 dark:border-zinc-700 dark:focus:ring-sky-950" />
+        <h1 className="mb-5 text-2xl font-semibold">新建议题</h1>
+        <input autoFocus required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="标题" className="h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm shadow-sm outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-100 dark:border-zinc-700 dark:focus:ring-sky-950" />
         <div className="mt-4 overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
           <div className="flex items-center gap-4 border-b border-zinc-200 px-4 dark:border-zinc-800">
-            <button type="button" onClick={() => setPreview(false)} className={`border-b-2 py-3 text-sm ${!preview ? "border-sky-600 font-medium" : "border-transparent text-zinc-500"}`}>Write</button>
-            <button type="button" onClick={() => setPreview(true)} className={`border-b-2 py-3 text-sm ${preview ? "border-sky-600 font-medium" : "border-transparent text-zinc-500"}`}>Preview</button>
+            <button type="button" onClick={() => setPreview(false)} className={`border-b-2 py-3 text-sm ${!preview ? "border-sky-600 font-medium" : "border-transparent text-zinc-500"}`}>编辑</button>
+            <button type="button" onClick={() => setPreview(true)} className={`border-b-2 py-3 text-sm ${preview ? "border-sky-600 font-medium" : "border-transparent text-zinc-500"}`}>预览</button>
           </div>
-          {preview ? <div className="min-h-72 whitespace-pre-wrap p-4 text-sm leading-6 text-zinc-700 dark:text-zinc-300">{body || <span className="text-zinc-400">Nothing to preview</span>}</div> : <textarea required value={body} onChange={(event) => setBody(event.target.value)} placeholder="Type your description here..." className="min-h-72 w-full resize-y bg-transparent p-4 text-sm leading-6 outline-none" />}
+          {preview ? <div className="min-h-72 whitespace-pre-wrap p-4 text-sm leading-6 text-zinc-700 dark:text-zinc-300">{body || <span className="text-zinc-400">暂无可预览内容</span>}</div> : <textarea required value={body} onChange={(event) => setBody(event.target.value)} placeholder="在这里输入描述..." className="min-h-72 w-full resize-y bg-transparent p-4 text-sm leading-6 outline-none" />}
         </div>
         {message && <p className="mt-3 text-sm text-red-600">{message}</p>}
-        <div className="mt-5 flex justify-end gap-3"><Button type="button" variant="outline" onPress={onCancel}>Cancel</Button><Button type="submit" isDisabled={saving || !user}>{saving ? "Creating..." : "Create issue"}</Button></div>
+        <div className="mt-5 flex justify-end gap-3"><Button type="button" variant="outline" onPress={onCancel}>取消</Button><Button type="submit" isDisabled={saving || !user}>{saving ? "正在创建..." : "创建议题"}</Button></div>
       </form>
       <aside className="divide-y divide-zinc-200 border-t border-zinc-200 text-sm dark:divide-zinc-800 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6">
-        <IssueMeta label="Assignees" value="No one assigned" />
-        <IssueMeta label="Labels" value="No labels" />
-        <IssueMeta label="Projects" value="No projects" />
-        <IssueMeta label="Milestone" value="No milestone" />
+        <IssueMeta label="受理人" value="未分配" />
+        <IssueMeta label="标签" value="暂无标签" />
+        <IssueMeta label="项目" value="暂无项目" />
+        <IssueMeta label="里程碑" value="暂无里程碑" />
       </aside>
     </div>
   )
@@ -559,20 +565,20 @@ function IssueDetail({ name, issueID, user, onBack, onStateChange }: { name: str
     setIssue(nextIssue)
     setComments(nextComments)
   }
-  useEffect(() => { void load().catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load issue.")) }, [name, issueID])
+  useEffect(() => { void load().catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载议题。")) }, [name, issueID])
   if (!issue && !message) return <Loading />
-  if (!issue) return <PageMessage title="Issue" message={message} />
+  if (!issue) return <PageMessage title="议题" message={message} />
   const updateState = (state: string) => { onStateChange(state); setIssue({ ...issue, state }) }
   return <div className="mx-auto max-w-5xl">
-    <button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />所有 Issues</button>
+    <button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />所有议题</button>
     <div className="border-b border-zinc-200 pb-5 dark:border-zinc-800"><h1 className="text-2xl font-semibold leading-tight">{issue.title} <span className="font-normal text-zinc-400">#{issue.id}</span></h1><div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500"><Badge state={issue.state} /><span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong> opened this issue {when(issue.createdAt)}</span></div></div>
     <div className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_210px]">
       <div className="space-y-5">
-        <article className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{issue.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong><span>opened {when(issue.createdAt)}</span></header><div className="min-h-24 whitespace-pre-wrap p-4 text-sm leading-6">{issue.body || <span className="text-zinc-400">No description provided.</span>}</div></article>
+        <article className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{issue.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{issue.author}</strong><span>创建于 {when(issue.createdAt)}</span></header><div className="min-h-24 whitespace-pre-wrap p-4 text-sm leading-6">{issue.body || <span className="text-zinc-400">未提供描述。</span>}</div></article>
         {comments.map((comment) => <article key={comment.id} className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-emerald-100 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{comment.author.slice(0, 1).toUpperCase()}</span><strong className="font-medium text-zinc-700 dark:text-zinc-300">{comment.author}</strong><span>commented {when(comment.createdAt)}</span></header><div className="whitespace-pre-wrap p-4 text-sm leading-6">{comment.body}</div></article>)}
-        {user ? <form className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900" onSubmit={async (event) => { event.preventDefault(); if (!body.trim()) return; setSaving(true); setMessage(""); try { const comment = await api<IssueComment>(`/api/repos/${name}/issues/${issueID}/comments`, { method: "POST", body: JSON.stringify({ body }) }); setComments([...comments, comment]); setBody("") } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not post comment.") } finally { setSaving(false) } }}><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Leave a comment" className="min-h-28 w-full resize-y bg-transparent p-2 text-sm leading-6 outline-none" />{message && <p className="px-2 pb-2 text-sm text-red-600">{message}</p>}<div className="flex justify-end border-t border-zinc-100 pt-3 dark:border-zinc-800"><Button type="submit" isDisabled={saving || !body.trim()}><MessageSquare />{saving ? "Commenting..." : "Comment"}</Button></div></form> : <p className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700">登录后即可参与讨论。</p>}
+        {user ? <form className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900" onSubmit={async (event) => { event.preventDefault(); if (!body.trim()) return; setSaving(true); setMessage(""); try { const comment = await api<IssueComment>(`/api/repos/${name}/issues/${issueID}/comments`, { method: "POST", body: JSON.stringify({ body }) }); setComments([...comments, comment]); setBody("") } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法发布评论。") } finally { setSaving(false) } }}><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="留下评论" className="min-h-28 w-full resize-y bg-transparent p-2 text-sm leading-6 outline-none" />{message && <p className="px-2 pb-2 text-sm text-red-600">{message}</p>}<div className="flex justify-end border-t border-zinc-100 pt-3 dark:border-zinc-800"><Button type="submit" isDisabled={saving || !body.trim()}><MessageSquare />{saving ? "正在评论..." : "评论"}</Button></div></form> : <p className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700">登录后即可参与讨论。</p>}
       </div>
-      <aside className="border-t border-zinc-200 text-sm dark:border-zinc-800 lg:border-t-0 lg:border-l lg:pl-5"><IssueMeta label="Assignees" value="No one assigned" /><IssueMeta label="Labels" value="No labels" /><IssueMeta label="Projects" value="No projects" />{user && <div className="py-5"><p className="font-medium">State</p><Button size="sm" variant="outline" className="mt-3" onPress={() => updateState(issue.state === "open" ? "closed" : "open")}>{issue.state === "open" ? "Close issue" : "Reopen issue"}</Button></div>}</aside>
+      <aside className="border-t border-zinc-200 text-sm dark:border-zinc-800 lg:border-t-0 lg:border-l lg:pl-5"><IssueMeta label="受理人" value="未分配" /><IssueMeta label="标签" value="暂无标签" /><IssueMeta label="项目" value="暂无项目" />{user && <div className="py-5"><p className="font-medium">状态</p><Button size="sm" variant="outline" className="mt-3" onPress={() => updateState(issue.state === "open" ? "closed" : "open")}>{issue.state === "open" ? "关闭议题" : "重新打开议题"}</Button></div>}</aside>
     </div>
   </div>
 }
@@ -581,9 +587,9 @@ function PullRequestList({ items, user, onNew, onDelete, onStateChange }: { item
   const [filter, setFilter] = useState("")
   const visible = items.filter((item) => `${item.title} ${item.author} ${item.state}`.toLowerCase().includes(filter.toLowerCase()))
   return <>
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold">Pull requests</h1><Button onPress={onNew} isDisabled={!user}><GitPullRequest /> New pull request</Button></div>
-    <div className="mb-4 flex items-center rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><span className="px-3 text-zinc-400"><ListFilter className="size-4" /></span><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter pull requests" className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none" /><span className="mr-3 text-xs text-zinc-500">{visible.length} results</span></div>
-    <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">{visible.length ? visible.map((item) => <article key={item.id} className="border-b border-zinc-200 px-5 py-4 last:border-0 dark:border-zinc-800"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge state={item.state} /><strong>#{item.id} {item.title}</strong></div><p className="mt-2 text-sm text-zinc-500"><code>{item.sourceBranch}</code> into <code>{item.targetBranch}</code> opened by {item.author} · {when(item.createdAt)}</p>{user && <div className="mt-3 flex gap-2"><Button size="xs" variant="outline" onPress={() => onStateChange(item.id, item.state === "open" ? "closed" : "open")}>{item.state === "open" ? "Close" : "Reopen"}</Button><Button size="xs" variant="destructive" onPress={() => onDelete(item.id)}>Delete</Button></div>}</article>) : <Empty icon={<GitPullRequest />} title="Welcome to pull requests!" text={user ? "Compare two branches to start a pull request." : "Sign in to start a pull request."} />}</div>
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold">拉取请求</h1><Button onPress={onNew} isDisabled={!user}><GitPullRequest /> 新建拉取请求</Button></div>
+    <div className="mb-4 flex items-center rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><span className="px-3 text-zinc-400"><ListFilter className="size-4" /></span><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选拉取请求" className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none" /><span className="mr-3 text-xs text-zinc-500">{visible.length} 项结果</span></div>
+    <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">{visible.length ? visible.map((item) => <article key={item.id} className="border-b border-zinc-200 px-5 py-4 last:border-0 dark:border-zinc-800"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge state={item.state} /><strong>#{item.id} {item.title}</strong></div><p className="mt-2 text-sm text-zinc-500"><code>{item.sourceBranch}</code> 合并到 <code>{item.targetBranch}</code> · {item.author} 创建于 {when(item.createdAt)}</p>{user && <div className="mt-3 flex gap-2"><Button size="xs" variant="outline" onPress={() => onStateChange(item.id, item.state === "open" ? "closed" : "open")}>{item.state === "open" ? "关闭" : "重新打开"}</Button><Button size="xs" variant="destructive" onPress={() => onDelete(item.id)}>删除</Button></div>}</article>) : <Empty icon={<GitPullRequest />} title="欢迎使用拉取请求" text={user ? "比较两个分支以开始创建拉取请求。" : "登录后即可创建拉取请求。"} />}</div>
   </>
 }
 
@@ -595,13 +601,13 @@ function CompareChanges({ name, user, onCancel, onCreated }: { name: string; use
   const [body, setBody] = useState("")
   const [message, setMessage] = useState("")
   const [saving, setSaving] = useState(false)
-  useEffect(() => { void api<GitRef[]>(`/api/repos/${name}/branches`).then((items) => { setBranches(items); if (items[0]) setBase(items.find((item) => item.name === "main")?.name || items[0].name); if (items[1]) setCompare(items[1].name) }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load branches.")) }, [name])
+  useEffect(() => { void api<GitRef[]>(`/api/repos/${name}/branches`).then((items) => { setBranches(items); if (items[0]) setBase(items.find((item) => item.name === "main")?.name || items[0].name); if (items[1]) setCompare(items[1].name) }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载分支。")) }, [name])
   const canCreate = Boolean(user && compare && compare !== base && title.trim())
-  return <div className="mx-auto max-w-5xl"><div className="mb-2 flex items-center gap-2 text-sm text-zinc-500"><GitCompareArrows className="size-4" /> Compare changes</div><h1 className="text-2xl font-semibold">Compare branches</h1><p className="mt-2 text-sm text-zinc-500">Choose a base branch and a branch containing your changes.</p><div className="mt-6 flex flex-wrap items-center gap-3 rounded-lg border border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-900"><BranchSelect label="base" value={base} branches={branches} onChange={setBase} /><ArrowLeft className="size-4 text-zinc-400" /><BranchSelect label="compare" value={compare} branches={branches} onChange={setCompare} /></div>{message && <p className="mt-4 text-sm text-red-600">{message}</p>}{compare && compare === base && <p className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">Choose different branches or forks above to discuss and review changes.</p>}<form className="mt-6 space-y-4" onSubmit={async (event) => { event.preventDefault(); if (!canCreate) return; setSaving(true); setMessage(""); try { await onCreated({ title, body, sourceBranch: compare, targetBranch: base }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not create pull request.") } finally { setSaving(false) } }}><input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Pull request title" className="h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm outline-none focus:border-sky-600 dark:border-zinc-700" /><textarea required value={body} onChange={(event) => setBody(event.target.value)} placeholder="Describe your changes" className="min-h-36 w-full rounded-lg border border-zinc-300 bg-transparent p-3 text-sm outline-none focus:border-sky-600 dark:border-zinc-700" /><div className="flex justify-end gap-3"><Button type="button" variant="outline" onPress={onCancel}>Cancel</Button><Button type="submit" isDisabled={!canCreate || saving}>{saving ? "Creating..." : "Create pull request"}</Button></div></form></div>
+  return <div className="mx-auto max-w-5xl"><div className="mb-2 flex items-center gap-2 text-sm text-zinc-500"><GitCompareArrows className="size-4" /> 比较变更</div><h1 className="text-2xl font-semibold">比较分支</h1><p className="mt-2 text-sm text-zinc-500">选择基准分支和包含变更的分支。</p><div className="mt-6 flex flex-wrap items-center gap-3 rounded-lg border border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-900"><BranchSelect label="基准" value={base} branches={branches} onChange={setBase} /><ArrowLeft className="size-4 text-zinc-400" /><BranchSelect label="比较" value={compare} branches={branches} onChange={setCompare} /></div>{message && <p className="mt-4 text-sm text-red-600">{message}</p>}{compare && compare === base && <p className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">请选择不同的分支或派生仓库进行比较。</p>}<form className="mt-6 space-y-4" onSubmit={async (event) => { event.preventDefault(); if (!canCreate) return; setSaving(true); setMessage(""); try { await onCreated({ title, body, sourceBranch: compare, targetBranch: base }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法创建拉取请求。") } finally { setSaving(false) } }}><input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="拉取请求标题" className="h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm outline-none focus:border-sky-600 dark:border-zinc-700" /><textarea required value={body} onChange={(event) => setBody(event.target.value)} placeholder="描述你的变更" className="min-h-36 w-full rounded-lg border border-zinc-300 bg-transparent p-3 text-sm outline-none focus:border-sky-600 dark:border-zinc-700" /><div className="flex justify-end gap-3"><Button type="button" variant="outline" onPress={onCancel}>取消</Button><Button type="submit" isDisabled={!canCreate || saving}>{saving ? "正在创建..." : "创建拉取请求"}</Button></div></form></div>
 }
 
 function BranchSelect({ label, value, branches, onChange }: { label: string; value: string; branches: GitRef[]; onChange: (value: string) => void }) {
-  return <label className="flex items-center gap-2 text-sm font-medium"><span className="text-zinc-500">{label}:</span><select value={value} onChange={(event) => onChange(event.target.value)} className="h-8 rounded-md border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-950">{label === "compare" && <option value="">Select branch</option>}{branches.length ? branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>) : <option value="">No branches</option>}</select><ChevronDown className="-ml-7 size-3.5 pointer-events-none text-zinc-500" /></label>
+  return <label className="flex items-center gap-2 text-sm font-medium"><span className="text-zinc-500">{label}：</span><select value={value} onChange={(event) => onChange(event.target.value)} className="h-8 rounded-md border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-950">{label === "比较" && <option value="">选择分支</option>}{branches.length ? branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>) : <option value="">暂无分支</option>}</select><ChevronDown className="-ml-7 size-3.5 pointer-events-none text-zinc-500" /></label>
 }
 
 function WorkList<T extends { id: number }>({

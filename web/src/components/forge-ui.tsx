@@ -42,7 +42,7 @@ export function Badge({ state }: { state: string }) {
     <span
       className={`rounded-full px-2 py-0.5 text-xs font-medium ${state === "open" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : state === "merged" ? "bg-purple-100 text-purple-700" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}
     >
-      {state}
+      {state === "open" ? "开启" : state === "merged" ? "已合并" : state === "closed" ? "已关闭" : state}
     </span>
   )
 }
