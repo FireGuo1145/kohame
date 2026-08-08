@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, ChevronDown, CircleDot, Code2, Copy, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Settings, Star, Tag, Users, X } from "lucide-react"
+import { ArrowLeft, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Settings, Star, Tag, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
@@ -22,7 +22,8 @@ function RepositoryView({
   const subpath = location.pathname.slice(`/${name}`.length).replace(/^\//, "")
   const issueMatch = subpath.match(/^issues\/(\d+)$/)
   const issueID = issueMatch ? Number(issueMatch[1]) : 0
-  const tab = subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : subpath || "code"
+  const filePath = subpath.startsWith("blob/") ? decodeURIComponent(subpath.slice("blob/".length)) : ""
+  const tab = subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : filePath ? "file" : subpath || "code"
   const [issues, setIssues] = useState<Issue[]>([])
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [releases, setReleases] = useState<Release[]>([])
@@ -152,7 +153,8 @@ function RepositoryView({
         </p>
       )}
       <section className="mt-6">
-        {tab === "code" && <CodeBrowser name={name} />}
+        {tab === "code" && <CodeBrowser name={name} onOpenFile={(path) => navigate(`/${name}/blob/${path.split("/").map(encodeURIComponent).join("/")}`)} />}
+        {tab === "file" && <FilePreview name={name} path={filePath} onBack={() => navigate(`/${name}`)} />}
         {tab === "commits" && <RepositoryList name={name} kind="commits" />}
         {tab === "branches" && <RepositoryList name={name} kind="branches" />}
         {tab === "tags" && <RepositoryList name={name} kind="tags" />}
@@ -265,18 +267,24 @@ function RepositoryView({
   )
 }
 
-function CodeBrowser({ name }: { name: string }) {
+function CodeBrowser({ name, onOpenFile }: { name: string; onOpenFile: (path: string) => void }) {
   const [directory, setDirectory] = useState("")
   const [entries, setEntries] = useState<TreeEntry[]>([])
-  const [file, setFile] = useState<Blob | null>(null)
+  const [branches, setBranches] = useState<GitRef[]>([])
+  const [commits, setCommits] = useState<Commit[]>([])
+  const [settings, setSettings] = useState<RepositorySettings | null>(null)
+  const [releases, setReleases] = useState<Release[]>([])
+  const [contributors, setContributors] = useState<Contributor[]>([])
+  const [ref, setRef] = useState("HEAD")
+  const [filter, setFilter] = useState("")
+  const [copied, setCopied] = useState(false)
   const [message, setMessage] = useState("")
   useEffect(() => {
     void api<TreeEntry[]>(
-      `/api/repos/${name}/tree?path=${encodeURIComponent(directory)}`
+      `/api/repos/${name}/tree?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(directory)}`
     )
       .then((items) => {
         setEntries(items)
-        setFile(null)
       })
       .catch((cause: unknown) =>
         setMessage(
@@ -285,98 +293,57 @@ function CodeBrowser({ name }: { name: string }) {
             : "Could not read repository tree."
         )
       )
-  }, [name, directory])
-  const openEntry = async (entry: TreeEntry) => {
+  }, [name, directory, ref])
+  useEffect(() => {
+    void Promise.all([
+      api<GitRef[]>(`/api/repos/${name}/branches`),
+      api<Commit[]>(`/api/repos/${name}/commits?ref=${encodeURIComponent(ref)}`),
+      api<RepositorySettings>(`/api/repos/${name}/settings`),
+      api<Release[]>(`/api/repos/${name}/releases`),
+      api<Contributor[]>(`/api/repos/${name}/contributors`),
+    ]).then(([nextBranches, nextCommits, nextSettings, nextReleases, nextContributors]) => {
+      setBranches(nextBranches); setCommits(nextCommits); setSettings(nextSettings); setReleases(nextReleases); setContributors(nextContributors)
+      if (ref === "HEAD" && nextBranches[0]) setRef(nextBranches.some((branch) => branch.name === nextSettings.defaultBranch) ? nextSettings.defaultBranch : nextBranches[0].name)
+    }).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not load repository overview."))
+  }, [name, ref])
+  const openEntry = (entry: TreeEntry) => {
     if (entry.type === "tree") {
       setDirectory(entry.path)
       return
     }
-    try {
-      setFile(
-        await api<Blob>(
-          `/api/repos/${name}/blob?path=${encodeURIComponent(entry.path)}`
-        )
-      )
-    } catch (cause) {
-      setMessage(
-        cause instanceof Error ? cause.message : "Could not read file."
-      )
-    }
+    onOpenFile(entry.path)
   }
   const crumbs = directory ? directory.split("/") : []
+  const visibleEntries = entries.filter((entry) => entry.name.toLowerCase().includes(filter.trim().toLowerCase()))
+  const latestCommit = commits[0]
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="flex items-center gap-1 border-b border-zinc-100 px-4 py-3 text-sm dark:border-zinc-800">
-          <button
-            className="text-emerald-700 hover:underline dark:text-emerald-300"
-            onClick={() => setDirectory("")}
-          >
-            {name}
-          </button>
-          {crumbs.map((crumb, index) => (
-            <span key={`${crumb}-${index}`}>
-              <span className="mx-1 text-zinc-300">/</span>
-              <button
-                onClick={() =>
-                  setDirectory(crumbs.slice(0, index + 1).join("/"))
-                }
-                className="hover:underline"
-              >
-                {crumb}
-              </button>
-            </span>
-          ))}
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_250px]">
+      <div className="min-w-0">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <label className="relative"><GitBranch className="pointer-events-none absolute left-3 top-2.5 size-4 text-zinc-500" /><select value={ref} onChange={(event) => { setRef(event.target.value); setDirectory("") }} className="h-9 min-w-32 appearance-none rounded-lg border border-zinc-300 bg-white py-0 pl-9 pr-8 text-sm font-medium shadow-sm outline-none dark:border-zinc-700 dark:bg-zinc-900">{branches.length ? branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>) : <option value="HEAD">HEAD</option>}</select><ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-zinc-500" /></label>
+          <span className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 dark:text-zinc-400"><GitBranch className="size-4" />{branches.length} branches</span>
+          <span className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-sm text-zinc-600 dark:text-zinc-400"><Tag className="size-4" />{releases.length} releases</span>
+          <label className="ml-auto flex h-9 min-w-48 flex-1 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 text-zinc-400 shadow-sm sm:max-w-72 dark:border-zinc-700 dark:bg-zinc-900"><ListFilter className="size-4" /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Go to file" className="w-full bg-transparent text-sm text-zinc-900 outline-none dark:text-zinc-100" /></label>
+          <Button variant="outline" size="sm" onPress={() => { void navigator.clipboard.writeText(`git clone ${window.location.origin}/${name}.git`); setCopied(true) }}><Code2 />{copied ? "Copied" : "Code"}</Button>
         </div>
-        {message && <p className="px-4 pt-3 text-sm text-red-600">{message}</p>}
-        {entries.length ? (
-          entries.map((entry) => (
-            <button
-              key={entry.path}
-              onClick={() => void openEntry(entry)}
-              className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
-            >
-              <FolderGit2
-                className={`size-4 ${entry.type === "tree" ? "text-amber-500" : "text-zinc-400"}`}
-              />
-              <span>{entry.name}</span>
-              <small className="ml-auto text-zinc-400">
-                {entry.type === "tree" ? "directory" : "file"}
-              </small>
-            </button>
-          ))
-        ) : (
-          <Empty
-            icon={<FolderGit2 />}
-            title="No files on the default branch"
-            text="Push a commit to browse its source code here."
-          />
-        )}
+        {message && <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50">{message}</p>}
+        <div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><span className="grid size-6 place-items-center rounded-full bg-zinc-900 text-[10px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">{latestCommit?.author.slice(0, 1).toUpperCase() || "K"}</span><span className="min-w-0 flex-1 truncate"><strong className="font-medium">{latestCommit?.author || "No commits yet"}</strong>{latestCommit && <span className="ml-2 text-zinc-500">{latestCommit.subject}</span>}</span>{latestCommit && <span className="hidden text-xs text-zinc-500 sm:block">{latestCommit.hash} · {when(latestCommit.date)}</span>}</div>
+          {directory && <div className="flex items-center gap-1 border-b border-zinc-100 px-4 py-2 text-sm text-zinc-500 dark:border-zinc-800"><button onClick={() => setDirectory("")} className="text-sky-700 hover:underline dark:text-sky-300">{name}</button>{crumbs.map((crumb, index) => <span key={`${crumb}-${index}`}><span className="mx-1 text-zinc-400">/</span><button onClick={() => setDirectory(crumbs.slice(0, index + 1).join("/"))} className="hover:underline">{crumb}</button></span>)}</div>}
+          {visibleEntries.length ? visibleEntries.map((entry) => <button key={entry.path} onClick={() => openEntry(entry)} className="flex w-full items-center gap-3 border-b border-zinc-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"><span className={`grid size-5 place-items-center ${entry.type === "tree" ? "text-amber-600" : "text-zinc-500"}`}>{entry.type === "tree" ? <FolderGit2 className="size-4" /> : <FileCode2 className="size-4" />}</span><span className="font-medium text-sky-700 dark:text-sky-300">{entry.name}</span><span className="ml-auto text-xs text-zinc-400">{entry.type === "tree" ? "directory" : "file"}</span></button>) : <Empty icon={<FolderGit2 />} title="No files on this branch" text="Push a commit to browse its source code here." />}
+        </div>
       </div>
-      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-950 text-zinc-100 dark:border-zinc-800">
-        {file ? (
-          <>
-            <div className="border-b border-white/10 px-4 py-3 text-sm text-zinc-300">
-              {file.path}
-            </div>
-            {file.isText ? (
-              <pre className="max-h-[32rem] overflow-auto p-4 text-xs leading-6">
-                <code>{file.content}</code>
-              </pre>
-            ) : (
-              <p className="p-5 text-sm text-zinc-400">
-                Binary file preview is unavailable.
-              </p>
-            )}
-          </>
-        ) : (
-          <div className="grid min-h-64 place-items-center p-6 text-center text-sm text-zinc-400">
-            Select a file to preview its source code.
-          </div>
-        )}
-      </div>
+      <aside className="border-t border-zinc-200 pt-5 dark:border-zinc-800 xl:border-t-0 xl:border-l xl:pl-6 xl:pt-0"><h2 className="font-semibold">About</h2><p className="mt-3 text-sm leading-6 text-zinc-500">{settings?.description || "No description, website, or topics provided."}</p>{settings?.topics.length ? <div className="mt-4 flex flex-wrap gap-1.5">{settings.topics.map((topic) => <span key={topic} className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">{topic}</span>)}</div> : null}<div className="mt-5 space-y-3 border-b border-zinc-200 pb-5 text-sm dark:border-zinc-800"><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><GitCommitHorizontal className="size-4" />{commits.length} recent commits</p><p className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400"><Users className="size-4" />{contributors.length} contributors</p></div>{releases.length ? <div className="pt-5"><h3 className="font-semibold">Releases</h3>{releases.slice(0, 2).map((release) => <div key={release.id} className="mt-3"><p className="flex items-center gap-1 text-sm font-medium text-emerald-700 dark:text-emerald-300"><Tag className="size-3.5" />{release.tagName}</p><p className="mt-1 text-xs text-zinc-500">{release.title}</p></div>)}</div> : null}</aside>
     </div>
   )
+}
+
+function FilePreview({ name, path, onBack }: { name: string; path: string; onBack: () => void }) {
+  const [file, setFile] = useState<Blob | null>(null)
+  const [message, setMessage] = useState("")
+  useEffect(() => { void api<Blob>(`/api/repos/${name}/blob?path=${encodeURIComponent(path)}`).then(setFile).catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "Could not read file.")) }, [name, path])
+  if (!file && !message) return <Loading />
+  return <div className="mx-auto max-w-6xl"><button onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"><ArrowLeft className="size-4" />返回文件列表</button><div className="overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><header className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"><FileCode2 className="size-4 text-zinc-500" /><span className="font-medium">{path}</span></header>{message ? <p className="p-4 text-sm text-red-600">{message}</p> : file?.isText ? <pre className="max-h-[calc(100svh-15rem)] overflow-auto bg-zinc-950 p-5 text-xs leading-6 text-zinc-100"><code>{file.content}</code></pre> : <div className="grid min-h-64 place-items-center p-6 text-sm text-zinc-500">Binary file preview is unavailable.</div>}</div></div>
 }
 
 function RepositoryList({
