@@ -12,6 +12,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Database DatabaseConfig `yaml:"database"`
+	Captcha  CaptchaConfig  `yaml:"captcha"`
 }
 
 type ServerConfig struct {
@@ -25,6 +26,11 @@ type StorageConfig struct {
 type DatabaseConfig struct {
 	Driver string `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
+}
+type CaptchaConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	SiteKey string `yaml:"site_key"`
+	Secret  string `yaml:"secret"`
 }
 
 func Load(filename string) (Config, error) {
@@ -41,6 +47,9 @@ func Load(filename string) (Config, error) {
 	}
 	if cfg.Database.Driver != "sqlite" && cfg.Database.Driver != "pgsql" {
 		return Config{}, fmt.Errorf("database.driver must be sqlite or pgsql")
+	}
+	if cfg.Captcha.Enabled && (cfg.Captcha.SiteKey == "" || cfg.Captcha.Secret == "") {
+		return Config{}, fmt.Errorf("captcha.site_key and captcha.secret are required when captcha is enabled")
 	}
 
 	baseDir, err := filepath.Abs(filepath.Dir(filename))

@@ -69,6 +69,10 @@ type Contributor struct {
 	Username      string `json:"username"`
 	Contributions int    `json:"contributions"`
 }
+type Organization struct {
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
 
@@ -105,6 +109,67 @@ func (s *Store) Register(ctx context.Context, username, email, password string) 
 		return User{}, ErrSetupComplete
 	}
 	return s.createUser(ctx, username, email, password, false)
+}
+
+func (s *Store) CreateOrganization(ctx context.Context, user User, name string) (Organization, error) {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if len(name) < 2 || !validScope(name) {
+		return Organization{}, fmt.Errorf("organization name is invalid")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Organization{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	query := `INSERT INTO organizations (name, created_at) VALUES (` + s.args(1, 2) + `)`
+	var id int64
+	if s.driver == "pgsql" {
+		err = tx.QueryRowContext(ctx, query+" RETURNING id", name, now).Scan(&id)
+	} else {
+		result, insertErr := tx.ExecContext(ctx, query, name, now)
+		err = insertErr
+		if err == nil {
+			id, _ = result.LastInsertId()
+		}
+	}
+	if err != nil {
+		if isUnique(err) {
+			return Organization{}, ErrConflict
+		}
+		return Organization{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO organization_members (organization_id,user_id,role) VALUES (`+s.args(1, 2, 3)+`)`, id, user.ID, "owner"); err != nil {
+		return Organization{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Organization{}, err
+	}
+	return Organization{Name: name, Role: "owner"}, nil
+}
+func (s *Store) Scopes(ctx context.Context, user User) ([]Organization, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT o.name,m.role FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=`+s.arg(1)+` ORDER BY o.name`, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Organization{{Name: user.Username, Role: "user"}}
+	for rows.Next() {
+		var org Organization
+		if err := rows.Scan(&org.Name, &org.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, org)
+	}
+	return out, rows.Err()
+}
+func (s *Store) CanUseScope(ctx context.Context, user User, scope string) (bool, error) {
+	if scope == user.Username {
+		return true, nil
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE o.name=`+s.arg(1)+` AND m.user_id=`+s.arg(2), scope, user.ID).Scan(&count)
+	return count > 0, err
 }
 
 func (s *Store) createUser(ctx context.Context, username, email, password string, admin bool) (User, error) {
@@ -415,4 +480,12 @@ func isUnique(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate key")
+}
+func validScope(value string) bool {
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

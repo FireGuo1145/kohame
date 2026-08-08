@@ -41,6 +41,8 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS pull_requests (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, author_id BIGINT NOT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, source_branch VARCHAR(255) NOT NULL, target_branch VARCHAR(255) NOT NULL, state VARCHAR(16) NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS releases (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, author_id BIGINT NOT NULL, tag_name VARCHAR(255) NOT NULL, title VARCHAR(255) NOT NULL, notes TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS activities (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, user_id BIGINT NOT NULL, kind VARCHAR(32) NOT NULL, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS organizations (id ` + idColumn + `, name VARCHAR(80) UNIQUE NOT NULL, created_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS organization_members (organization_id BIGINT NOT NULL, user_id BIGINT NOT NULL, role VARCHAR(16) NOT NULL, PRIMARY KEY (organization_id, user_id))`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

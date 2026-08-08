@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -21,8 +23,9 @@ import (
 )
 
 type Server struct {
-	repos *repository.Store
-	forge *forge.Store
+	repos   *repository.Store
+	forge   *forge.Store
+	captcha config.CaptchaConfig
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -33,7 +36,7 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forge.NewStore(db, cfg.Database.Driver)}, nil
+	return &Server{repos: repository.NewStore(cfg.Storage.RepositoryRoot, db, cfg.Database.Driver), forge: forge.NewStore(db, cfg.Database.Driver), captcha: cfg.Captcha}, nil
 }
 
 func (s *Server) Close() error { return s.repos.Close() }
@@ -43,12 +46,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/setup/status", s.setupStatus)
 	mux.HandleFunc("POST /api/setup/admin", s.createAdmin)
 	mux.HandleFunc("GET /api/settings", s.settings)
+	mux.HandleFunc("GET /api/captcha", s.captchaSettings)
 	mux.HandleFunc("GET /api/admin/settings", s.adminSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", s.updateSettings)
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("GET /api/auth/me", s.me)
+	mux.HandleFunc("GET /api/scopes", s.scopes)
+	mux.HandleFunc("POST /api/organizations", s.createOrganization)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tree", s.tree)
@@ -66,7 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/releases/{id}", s.deleteRelease)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/contributors", s.contributors)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}", s.getRepo)
-	mux.HandleFunc("/git/{scope}/{name}/{rest...}", s.gitHTTP)
+	mux.HandleFunc("/{scope}/{rest...}", s.gitHTTPDirect)
 	mux.Handle("/", spa())
 	return securityHeaders(mux)
 }
@@ -94,7 +100,8 @@ func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireUser(w, r); !ok {
+	user, ok := s.requireUser(w, r)
+	if !ok {
 		return
 	}
 	var input struct {
@@ -105,7 +112,15 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Provide a repository name.")
 		return
 	}
-	repo, err := s.repos.Create(r.Context(), strings.TrimSpace(input.Scope), strings.TrimSpace(input.Name))
+	input.Scope = strings.TrimSpace(input.Scope)
+	if allowed, err := s.forge.CanUseScope(r.Context(), user, input.Scope); err != nil {
+		writeError(w, 500, "Could not verify repository scope.")
+		return
+	} else if !allowed {
+		writeError(w, 403, "Choose your own username or an organization you belong to.")
+		return
+	}
+	repo, err := s.repos.Create(r.Context(), input.Scope, strings.TrimSpace(input.Name))
 	switch {
 	case errors.Is(err, repository.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "Scope and repository name use 1–80 lowercase letters, numbers, dots, hyphens, or underscores.")
@@ -150,6 +165,10 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	if err := s.verifyCaptcha(r, input.CaptchaToken); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	user, err := s.forge.Register(r.Context(), input.Username, input.Email, input.Password)
 	switch {
 	case errors.Is(err, forge.ErrForbidden):
@@ -164,6 +183,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		s.startSession(w, r, user)
 		writeJSON(w, http.StatusCreated, user)
 	}
+}
+func (s *Server) captchaSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"enabled": s.captcha.Enabled, "siteKey": s.captcha.SiteKey})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +222,40 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		writeJSON(w, http.StatusOK, user)
 	}
+}
+func (s *Server) scopes(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.Scopes(r.Context(), user)
+	if err != nil {
+		writeError(w, 500, "Could not load scopes.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createOrganization(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	org, err := s.forge.CreateOrganization(r.Context(), user, input.Name)
+	if errors.Is(err, forge.ErrConflict) {
+		writeError(w, 409, "That organization already exists.")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, org)
 }
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	value, err := s.forge.Settings(r.Context())
@@ -494,9 +550,10 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 }
 
 type credentials struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	Password     string `json:"password"`
+	CaptchaToken string `json:"captchaToken"`
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
@@ -575,6 +632,38 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user forge
 	}
 	http.SetCookie(w, &http.Cookie{Name: "kohame_session", Value: token, Path: "/", Expires: time.Now().Add(30 * 24 * time.Hour), HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
 }
+
+func (s *Server) verifyCaptcha(r *http.Request, token string) error {
+	if !s.captcha.Enabled {
+		return nil
+	}
+	if token == "" {
+		return errors.New("请完成人机验证")
+	}
+	values := make(url.Values)
+	values.Set("secret", s.captcha.Secret)
+	values.Set("response", token)
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		values.Set("remoteip", host)
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "https://hcaptcha.com/siteverify", strings.NewReader(values.Encode()))
+	if err != nil {
+		return errors.New("人机验证请求创建失败")
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return errors.New("人机验证服务不可用")
+	}
+	defer response.Body.Close()
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil || !result.Success {
+		return errors.New("人机验证失败，请重试")
+	}
+	return nil
+}
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {
@@ -585,19 +674,27 @@ func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 }
 
 // gitHTTP delegates Git smart-HTTP protocol framing to the installed git executable.
-func (s *Server) gitHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Server) gitHTTPDirect(w http.ResponseWriter, r *http.Request) {
+	scope, raw := r.PathValue("scope"), r.PathValue("rest")
+	nameWithSuffix, rest, ok := strings.Cut(raw, "/")
+	if !ok || !strings.HasSuffix(nameWithSuffix, ".git") {
+		spa().ServeHTTP(w, r)
+		return
+	}
+	s.serveGit(w, r, scope, strings.TrimSuffix(nameWithSuffix, ".git"), rest)
+}
+
+func (s *Server) serveGit(w http.ResponseWriter, r *http.Request, scope, name, rest string) {
 	user, err := s.gitUser(r)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Basic realm="Kohame Git"`)
 		writeError(w, http.StatusUnauthorized, "Sign in with your Kohame username and password to use Git HTTP.")
 		return
 	}
-	scope, name := r.PathValue("scope"), r.PathValue("name")
 	if _, err := s.repos.Get(scope, name); err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	rest := r.PathValue("rest")
 	if strings.Contains(rest, "..") {
 		http.NotFound(w, r)
 		return

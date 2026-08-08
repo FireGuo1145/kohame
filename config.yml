@@ -10,3 +10,9 @@ database:
   driver: sqlite
   # For sqlite this is a filesystem path. For pgsql use a PostgreSQL DSN.
   dsn: data/kohame.db
+
+captcha:
+  # Set enabled plus real hCaptcha keys to require hCaptcha on registration.
+  enabled: false
+  site_key: ""
+  secret: ""

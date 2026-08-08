@@ -1,4 +1,10 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react"
 import {
   Check,
   Copy,
@@ -34,6 +40,14 @@ type Repository = {
 }
 type TreeEntry = { name: string; path: string; type: string }
 type Blob = { path: string; content: string; isText: boolean }
+type CaptchaConfig = { enabled: boolean; siteKey: string }
+declare global {
+  interface Window {
+    hcaptcha?: {
+      render: (element: HTMLElement, options: Record<string, unknown>) => void
+    }
+  }
+}
 type Issue = {
   id: number
   title: string
@@ -329,6 +343,7 @@ function Auth({
   const [identity, setIdentity] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [captchaToken, setCaptchaToken] = useState("")
   const [message, setMessage] = useState("")
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -343,7 +358,12 @@ function Auth({
             })
           : await api<User>("/api/auth/register", {
               method: "POST",
-              body: JSON.stringify({ username: identity, email, password }),
+              body: JSON.stringify({
+                username: identity,
+                email,
+                password,
+                captchaToken,
+              }),
             })
       onUser(user)
       setMode(null)
@@ -399,6 +419,7 @@ function Auth({
           type="password"
           placeholder="••••••••"
         />
+        {mode === "register" && <HCaptcha onToken={setCaptchaToken} />}
         {message && <p className="text-sm text-red-600">{message}</p>}
         <Button type="submit" className="w-full">
           {mode === "login" ? "Sign in" : "Create account"}
@@ -406,6 +427,41 @@ function Auth({
       </form>
     </div>
   )
+}
+
+function HCaptcha({ onToken }: { onToken: (token: string) => void }) {
+  const host = useRef<HTMLDivElement>(null)
+  const [config, setConfig] = useState<CaptchaConfig | null>(null)
+  useEffect(() => {
+    void api<CaptchaConfig>("/api/captcha")
+      .then(setConfig)
+      .catch(() => setConfig({ enabled: false, siteKey: "" }))
+  }, [])
+  useEffect(() => {
+    if (!config?.enabled || !host.current) return
+    const render = () => {
+      if (window.hcaptcha && host.current)
+        window.hcaptcha.render(host.current, {
+          sitekey: config.siteKey,
+          callback: onToken,
+        })
+    }
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src^="https://js.hcaptcha.com"]'
+    )
+    if (existing) {
+      existing.addEventListener("load", render, { once: true })
+      render()
+      return
+    }
+    const script = document.createElement("script")
+    script.src = "https://js.hcaptcha.com/1/api.js?render=explicit"
+    script.async = true
+    script.defer = true
+    script.addEventListener("load", render, { once: true })
+    document.head.appendChild(script)
+  }, [config, onToken])
+  return config?.enabled ? <div ref={host} className="pt-1" /> : null
 }
 
 function Dashboard({
@@ -491,7 +547,7 @@ function Dashboard({
                     variant="ghost"
                     size="sm"
                     onPress={() => {
-                      const command = `git clone ${window.location.origin}/git/${repo.fullName}`
+                      const command = `git clone ${window.location.origin}/${repo.fullName}.git`
                       void navigator.clipboard.writeText(command)
                       setCopied(repo.fullName)
                     }}
@@ -653,7 +709,7 @@ function RepositoryView({
           </div>
         </div>
         <code className="rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
-          git clone {window.location.origin}/git/{name}
+          git clone {window.location.origin}/{name}.git
         </code>
       </div>
       <div className="mt-7 flex gap-1 overflow-auto border-b border-zinc-200 dark:border-zinc-800">
