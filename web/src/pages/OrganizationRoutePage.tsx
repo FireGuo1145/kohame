@@ -14,7 +14,8 @@ function OrganizationPage({ name, onOpen, user }: { name: string; onOpen: (name:
 }
 
 export default function OrganizationRoutePage({ onOpen, user }: { onOpen: (name: string) => void; user: User | null }) {
-  const { name } = useParams()
+  const { name: routeName, username } = useParams()
+  const name = routeName || username
   const [organization, setOrganization] = useState<boolean | null>(null)
   useEffect(() => { if (!name) return; void api<Organization>(`/api/organizations/${name}`).then(() => setOrganization(true)).catch(() => setOrganization(false)) }, [name])
   if (!name || organization === null) return <Loading />

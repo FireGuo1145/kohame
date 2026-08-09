@@ -33,6 +33,7 @@ function RepositoryView({
   const treeMatch = subpath.match(/^tree\/([^/]+)(?:\/(.*))?$/)
   const treeRef = treeMatch ? decodeURIComponent(treeMatch[1]) : "HEAD"
   const treeDirectory = treeMatch?.[2] ? decodeURIComponent(treeMatch[2]) : ""
+  const [repositoryScope, repositoryName] = name.split("/", 2)
   const tab = subpath === "new" ? "file-new" : subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : commitMatch ? "commit-detail" : releaseMatch ? "release-detail" : pullMatch ? "pull-detail" : treeMatch ? "code" : filePath ? "file" : subpath || "code"
   const [issues, setIssues] = useState<Issue[]>([])
   const [pulls, setPulls] = useState<PullRequest[]>([])
@@ -140,7 +141,7 @@ function RepositoryView({
             <FolderGit2 />
           </span>
           <div>
-            <h1 className="text-xl font-semibold">{name}</h1>
+            <h1 className="flex items-center gap-2 text-xl font-semibold"><button onClick={() => navigate(`/${repositoryScope}`)} className="hover:text-sky-700 hover:underline dark:hover:text-sky-300">{repositoryScope}</button><span className="font-normal text-zinc-400">/</span><span>{repositoryName}</span></h1>
             <p className="text-sm text-zinc-500">Git 仓库</p>
           </div>
         </div>
