@@ -204,6 +204,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/issues/{id}/comments", s.createIssueComment)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls", s.listPullRequests)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls", s.createPullRequest)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}", s.pullRequest)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}/comments", s.pullRequestComments)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls/{id}/comments", s.createPullRequestComment)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}/files", s.pullRequestFiles)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls/{id}/merge", s.mergePullRequest)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/pulls/{id}", s.updatePullRequest)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/pulls/{id}", s.deletePullRequest)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/releases", s.listReleases)
@@ -1185,6 +1190,130 @@ func (s *Server) createPullRequest(w http.ResponseWriter, r *http.Request) {
 	s.notifyRepositoryOwner(r, user, "pull_request", user.Username+" opened a pull request", item.Title)
 	writeJSON(w, 201, item)
 }
+func (s *Server) pullRequest(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.forge.PullRequest(r.Context(), repoKey(r), id)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not load pull request.")
+	} else {
+		writeJSON(w, 200, item)
+	}
+}
+func (s *Server) pullRequestComments(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.ListPullRequestComments(r.Context(), repoKey(r), id)
+	if err != nil {
+		writeError(w, 500, "Could not load pull request comments.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createPullRequestComment(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreatePullRequestComment(r.Context(), repoKey(r), id, user, input.Body)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 201, item)
+	}
+}
+func (s *Server) pullRequestFiles(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	pull, err := s.forge.PullRequest(r.Context(), repoKey(r), id)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "Could not load pull request.")
+		return
+	}
+	files, err := s.repos.PullRequestDiff(r.Context(), repo, pull.SourceBranch, pull.TargetBranch)
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 400, "Pull request branches are invalid.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 200, files)
+	}
+}
+func (s *Server) mergePullRequest(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权合并此拉取请求。")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	pull, err := s.forge.PullRequest(r.Context(), repoKey(r), id)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+		return
+	}
+	if err != nil || pull.State != "open" {
+		writeError(w, 400, "Only open pull requests can be merged.")
+		return
+	}
+	commit, err := s.repos.MergePullRequest(r.Context(), repo, pull.SourceBranch, pull.TargetBranch, user.Username, user.Email)
+	if err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	if err := s.forge.UpdatePullRequestState(r.Context(), repoKey(r), id, "merged"); err != nil {
+		writeError(w, 500, "Could not update pull request state.")
+		return
+	}
+	s.autoClosePullIssues(r, pull)
+	writeJSON(w, 200, commit)
+}
 func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
@@ -1202,6 +1331,10 @@ func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	if input.State == "merged" {
+		writeError(w, 400, "Use the merge endpoint to merge a pull request.")
+		return
+	}
 	err := s.forge.UpdatePullRequestState(r.Context(), repoKey(r), id, input.State)
 	if errors.Is(err, forge.ErrNotFound) {
 		writeError(w, 404, "Pull request not found.")
@@ -1211,18 +1344,16 @@ func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	if input.State == "merged" {
-		if settings, err := s.repos.Settings(r.Context(), repoKey(r)); err == nil && settings.AutoCloseIssues {
-			if pull, err := s.forge.PullRequest(r.Context(), repoKey(r), id); err == nil {
-				for _, match := range issueCloseReference.FindAllStringSubmatch(pull.Title+"\n"+pull.Body, -1) {
-					if issueID, err := strconv.ParseInt(match[1], 10, 64); err == nil {
-						_ = s.forge.UpdateIssueState(r.Context(), repoKey(r), issueID, "closed")
-					}
-				}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) autoClosePullIssues(r *http.Request, pull forge.PullRequest) {
+	if settings, err := s.repos.Settings(r.Context(), repoKey(r)); err == nil && settings.AutoCloseIssues {
+		for _, match := range issueCloseReference.FindAllStringSubmatch(pull.Title+"\n"+pull.Body, -1) {
+			if issueID, err := strconv.ParseInt(match[1], 10, 64); err == nil {
+				_ = s.forge.UpdateIssueState(r.Context(), repoKey(r), issueID, "closed")
 			}
 		}
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) deletePullRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {

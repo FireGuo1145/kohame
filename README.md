@@ -65,4 +65,4 @@ Vite proxies `/api` and `/git` to `http://localhost:3000`, so the frontend behav
 - Repository creation plus Git smart HTTP with browser session or HTTP Basic authentication.
 - Repository-scoped issues, pull requests, releases, and activity-based contributor summaries.
 
-This is a compact forge, not a full Gitea replacement yet: pull requests track review metadata but do not yet calculate diffs, comments, or perform server-side merges. Use HTTPS when serving it beyond a trusted local network.
+This is a compact forge, not a full Gitea replacement yet: pull requests provide file diffs, comments, and server-side merge commits, but do not yet offer inline review comments, approval workflows, or CI checks. Use HTTPS when serving it beyond a trusted local network.

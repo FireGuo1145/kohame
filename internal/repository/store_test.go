@@ -81,3 +81,39 @@ func TestInitializeCreatesReadmeAndDetectableLicense(t *testing.T) {
 		t.Fatalf("detected license = %q, want MIT", license)
 	}
 }
+
+func TestMergePullRequestBranch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := repository.NewStore(filepath.Join(root, "repos"), db, "sqlite")
+	ctx := context.Background()
+	repo, err := store.Create(ctx, "alice", "mergeable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Initialize(ctx, repo, "alice", "alice@example.com", true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteFile(ctx, repo, "feature", "feature.txt", "hello from feature\n", "alice", "alice@example.com", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+	files, err := store.PullRequestDiff(ctx, repo, "feature", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Path != "feature.txt" {
+		t.Fatalf("pull request files = %#v", files)
+	}
+	if _, err := store.MergePullRequest(ctx, repo, "feature", "main", "alice", "alice@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.Blob(ctx, repo, "main", "feature.txt")
+	if err != nil || file.Content != "hello from feature\n" {
+		t.Fatalf("merged file = %#v, %v", file, err)
+	}
+}

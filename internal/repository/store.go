@@ -514,7 +514,7 @@ func (s *Store) move(ctx context.Context, repo Repository, targetScope, targetNa
 		_ = os.Rename(nextPath, repo.Path)
 		return Repository{}, err
 	}
-	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "releases", "labels", "repository_collaborators", "protected_branches"} {
+	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "pull_request_comments", "releases", "labels", "repository_collaborators", "protected_branches"} {
 		if _, err = tx.ExecContext(ctx, `UPDATE `+table+` SET repository_name=`+s.placeholders(1)+` WHERE repository_name=`+s.placeholders(2), nextName, repo.FullName); err != nil {
 			_ = os.Rename(nextPath, repo.Path)
 			return Repository{}, err
@@ -544,7 +544,7 @@ func (s *Store) Delete(ctx context.Context, repo Repository) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "releases", "labels", "repository_collaborators", "protected_branches", "repository_forks", "repositories"} {
+	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "pull_request_comments", "releases", "labels", "repository_collaborators", "protected_branches", "repository_forks", "repositories"} {
 		column := "repository_name"
 		if table == "repositories" {
 			column = "name"
@@ -736,6 +736,75 @@ func (s *Store) WriteFile(ctx context.Context, repo Repository, branch, filePath
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE repositories SET updated_at=`+s.placeholders(1)+` WHERE name=`+s.placeholders(2), time.Now().UTC(), repo.FullName)
 	return items[0], nil
+}
+
+func (s *Store) PullRequestDiff(ctx context.Context, repo Repository, source, target string) ([]CommitFile, error) {
+	work, sourceRef, err := s.preparePullWorktree(ctx, repo, source, target)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(work)
+	output, err := exec.CommandContext(ctx, "git", "-C", work, "diff", "--find-renames", "--no-ext-diff", "origin/"+target+"..."+sourceRef).Output()
+	if err != nil {
+		return nil, fmt.Errorf("compare pull request: %w", err)
+	}
+	return parseCommitFiles(string(output)), nil
+}
+
+func (s *Store) MergePullRequest(ctx context.Context, repo Repository, source, target, author, email string) (Commit, error) {
+	work, sourceRef, err := s.preparePullWorktree(ctx, repo, source, target)
+	if err != nil {
+		return Commit{}, err
+	}
+	defer os.RemoveAll(work)
+	if output, err := exec.CommandContext(ctx, "git", "-C", work, "checkout", "-B", target, "origin/"+target).CombinedOutput(); err != nil {
+		return Commit{}, fmt.Errorf("checkout target branch: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	for _, args := range [][]string{{"config", "user.name", author}, {"config", "user.email", email}, {"merge", "--no-ff", "--no-edit", sourceRef}} {
+		if output, err := exec.CommandContext(ctx, "git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
+			return Commit{}, fmt.Errorf("merge pull request: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, err := exec.CommandContext(ctx, "git", "-C", work, "push", "origin", "HEAD:refs/heads/"+target).CombinedOutput(); err != nil {
+		return Commit{}, fmt.Errorf("push merge: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	commits, err := s.Commits(ctx, repo, target)
+	if err != nil || len(commits) == 0 {
+		return Commit{}, err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE repositories SET updated_at=`+s.placeholders(1)+` WHERE name=`+s.placeholders(2), time.Now().UTC(), repo.FullName)
+	return commits[0], nil
+}
+
+func (s *Store) preparePullWorktree(ctx context.Context, repo Repository, source, target string) (string, string, error) {
+	if !safeRef(target) {
+		return "", "", ErrNotFound
+	}
+	work, err := os.MkdirTemp("", "kohame-pr-")
+	if err != nil {
+		return "", "", err
+	}
+	fail := func(err error) (string, string, error) { _ = os.RemoveAll(work); return "", "", err }
+	if output, err := exec.CommandContext(ctx, "git", "clone", repo.Path, work).CombinedOutput(); err != nil {
+		return fail(fmt.Errorf("clone repository: %w: %s", err, strings.TrimSpace(string(output))))
+	}
+	sourceRef := "origin/" + source
+	if forkName, branch, forked := strings.Cut(source, ":"); forked {
+		if !safeRef(branch) {
+			return fail(ErrNotFound)
+		}
+		fork, err := s.GetFullName(forkName)
+		if err != nil {
+			return fail(err)
+		}
+		if output, err := exec.CommandContext(ctx, "git", "-C", work, "fetch", fork.Path, "refs/heads/"+branch).CombinedOutput(); err != nil {
+			return fail(fmt.Errorf("fetch fork branch: %w: %s", err, strings.TrimSpace(string(output))))
+		}
+		sourceRef = "FETCH_HEAD"
+	} else if !safeRef(source) {
+		return fail(ErrNotFound)
+	}
+	return work, sourceRef, nil
 }
 func valueOrMessage(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {

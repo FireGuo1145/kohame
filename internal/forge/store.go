@@ -82,6 +82,12 @@ type PullRequest struct {
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
+type PullRequestComment struct {
+	ID        int64     `json:"id"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
 type Release struct {
 	ID        int64          `json:"id"`
 	TagName   string         `json:"tagName"`
@@ -715,8 +721,45 @@ func (s *Store) PullRequest(ctx context.Context, repo string, id int64) (PullReq
 	}
 	return value, err
 }
+func (s *Store) ListPullRequestComments(ctx context.Context, repo string, pullID int64) ([]PullRequestComment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,u.username,c.body,c.created_at FROM pull_request_comments c JOIN users u ON u.id=c.author_id WHERE c.repository_name=`+s.arg(1)+` AND c.pull_request_id=`+s.arg(2)+` ORDER BY c.created_at ASC`, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PullRequestComment{}
+	for rows.Next() {
+		var item PullRequestComment
+		if err := rows.Scan(&item.ID, &item.Author, &item.Body, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+func (s *Store) CreatePullRequestComment(ctx context.Context, repo string, pullID int64, user User, body string) (PullRequestComment, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return PullRequestComment{}, fmt.Errorf("comment body is required")
+	}
+	if _, err := s.PullRequest(ctx, repo, pullID); err != nil {
+		return PullRequestComment{}, err
+	}
+	now := time.Now().UTC()
+	query := `INSERT INTO pull_request_comments (repository_name,pull_request_id,author_id,body,created_at) VALUES (` + s.args(1, 2, 3, 4, 5) + `)`
+	id, err := s.insertID(ctx, query, repo, pullID, user.ID, body, now)
+	if err != nil {
+		return PullRequestComment{}, err
+	}
+	if _, err = s.db.ExecContext(ctx, `UPDATE pull_requests SET updated_at=`+s.arg(1)+` WHERE repository_name=`+s.arg(2)+` AND id=`+s.arg(3), now, repo, pullID); err != nil {
+		return PullRequestComment{}, err
+	}
+	_ = s.activity(ctx, repo, user.ID, "pull_request_comment")
+	return PullRequestComment{ID: id, Author: user.Username, Body: body, CreatedAt: now}, nil
+}
 
 func (s *Store) DeletePullRequest(ctx context.Context, repo string, id int64) error {
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM pull_request_comments WHERE repository_name=`+s.arg(1)+` AND pull_request_id=`+s.arg(2), repo, id)
 	return s.deleteItem(ctx, "pull_requests", repo, id)
 }
 

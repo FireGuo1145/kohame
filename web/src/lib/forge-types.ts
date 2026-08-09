@@ -28,6 +28,7 @@ export type Label = { id: number; name: string; color: string; description: stri
 export type Issue = { id: number; title: string; body: string; state: string; author: string; createdAt: string; labels: Label[] }
 export type IssueComment = { id: number; author: string; body: string; createdAt: string }
 export type PullRequest = { id: number; title: string; body: string; sourceBranch: string; targetBranch: string; state: string; author: string; createdAt: string }
+export type PullRequestComment = { id: number; author: string; body: string; createdAt: string }
 export type ReleaseAsset = { id: number; fileName: string; size: number; url: string }
 export type Release = { id: number; tagName: string; title: string; notes: string; author: string; createdAt: string; assets: ReleaseAsset[] }
 export type SSHKey = { id: number; title: string; key: string; createdAt: string }
