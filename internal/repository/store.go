@@ -358,6 +358,26 @@ func (s *Store) Starred(ctx context.Context, repositoryName string, userID int64
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM repository_stars WHERE repository_name=`+s.placeholders(1)+` AND user_id=`+s.placeholders(2), repositoryName, userID).Scan(&count)
 	return count > 0, err
 }
+func (s *Store) StarredByUser(ctx context.Context, userID int64) ([]Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repository_name FROM repository_stars WHERE user_id=`+s.placeholders(1)+` ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Repository{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		repo, err := s.GetFullName(name)
+		if err != nil {
+			continue
+		}
+		items = append(items, repo)
+	}
+	return items, rows.Err()
+}
 
 func (s *Store) Settings(ctx context.Context, fullName string) (Settings, error) {
 	var value Settings

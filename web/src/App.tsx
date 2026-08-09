@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react"
-import { Bell, Building2, ChevronLeft, ChevronRight, FolderGit2, GitBranch, House, LogOut, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, User as UserIcon } from "lucide-react"
+import { Bell, Building2, ChevronLeft, ChevronRight, FolderGit2, GitBranch, House, LogOut, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Star, User as UserIcon } from "lucide-react"
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom"
 
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,7 @@ import VerifyRoutePage from "@/pages/VerifyRoutePage"
 import WorkPage from "@/pages/WorkPage"
 import { AccountSettingsPage } from "@/pages/AccountSettingsPage"
 import { CreateOrganizationPage, CreateRepositoryPage } from "@/pages/CreatePage"
+import StarredRepositoriesPage from "@/pages/StarredRepositoriesPage"
 
 export default function App() {
   const location = useLocation()
@@ -27,6 +28,7 @@ export default function App() {
   const [repos, setRepos] = useState<Repository[]>([])
   const [error, setError] = useState("")
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== "undefined" ? window.innerWidth < 768 : false)
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
 
   const refresh = async () => {
     const [status, settings, repositories] = await Promise.all([
@@ -105,8 +107,8 @@ export default function App() {
             {user?.isAdmin && <SidebarItem icon={<Settings />} label="站点设置" collapsed={sidebarCollapsed} active={isActive("/settings")} onPress={() => navigate("/settings")} />}
             {user && <SidebarItem icon={<UserIcon />} label="个人设置" collapsed={sidebarCollapsed} active={isActive("/account")} onPress={() => navigate("/account")} />}
           </div>
-          <div className="mt-auto border-t border-zinc-100 pt-3 dark:border-zinc-800">
-            {user ? <button onClick={() => navigate(`/${user.username}`)} className={`flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-900 ${sidebarCollapsed ? "justify-center" : ""}`} title={sidebarCollapsed ? user.username : undefined}><span className="grid size-7 place-items-center rounded-full bg-emerald-100 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{user.username.slice(0, 1).toUpperCase()}</span>{!sidebarCollapsed && <><span className="min-w-0 flex-1 truncate font-medium">{user.username}</span><LogOut className="size-3.5 text-zinc-400" /></>}</button> : !sidebarCollapsed && <p className="px-2 text-xs leading-5 text-zinc-500">登录后可创建仓库并管理协作。</p>}
+          <div className="relative mt-auto border-t border-zinc-100 pt-3 dark:border-zinc-800">
+            {user ? <><button onClick={() => setAccountMenuOpen(!accountMenuOpen)} className={`flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-900 ${sidebarCollapsed ? "justify-center" : ""}`} title={sidebarCollapsed ? user.username : undefined}><span className="grid size-7 place-items-center rounded-full bg-emerald-100 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{user.username.slice(0, 1).toUpperCase()}</span>{!sidebarCollapsed && <><span className="min-w-0 flex-1 truncate font-medium">{user.username}</span><ChevronRight className={`size-3.5 text-zinc-400 transition-transform ${accountMenuOpen ? "rotate-90" : "-rotate-90"}`} /></>}</button>{accountMenuOpen && <div className={`absolute bottom-12 z-40 overflow-hidden rounded-xl border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 ${sidebarCollapsed ? "left-0 w-60" : "left-0 right-0"}`}><div className="border-b border-zinc-100 px-3 py-2 dark:border-zinc-800"><p className="font-semibold">{user.username}</p><p className="mt-0.5 text-xs text-zinc-500">{user.email}</p></div><AccountMenuItem icon={<UserIcon />} label="个人主页" onPress={() => { setAccountMenuOpen(false); navigate(`/${user.username}`) }} /><AccountMenuItem icon={<FolderGit2 />} label="仓库" onPress={() => { setAccountMenuOpen(false); navigate(`/${user.username}?tab=repositories`) }} /><AccountMenuItem icon={<Star />} label="收藏" onPress={() => { setAccountMenuOpen(false); navigate("/stars") }} /><AccountMenuItem icon={<Building2 />} label="组织" onPress={() => { setAccountMenuOpen(false); navigate(`/${user.username}?tab=organizations`) }} /><div className="my-1 border-t border-zinc-100 dark:border-zinc-800" /><AccountMenuItem icon={<Settings />} label="设置" onPress={() => { setAccountMenuOpen(false); navigate("/account") }} /><AccountMenuItem icon={<LogOut />} label="退出登录" danger onPress={async () => { await api<void>("/api/auth/logout", { method: "POST" }); setUser(null); setAccountMenuOpen(false); openHome() }} /></div>}</> : !sidebarCollapsed && <p className="px-2 text-xs leading-5 text-zinc-500">登录后可创建仓库并管理协作。</p>}
           </div>
         </aside>
         <div className={`min-w-0 transition-[margin] duration-200 ${sidebarCollapsed ? "ml-[4.5rem]" : "ml-60"}`}>
@@ -135,8 +137,10 @@ export default function App() {
         <Route path="/verify" element={<VerifyRoutePage onDone={() => { void refresh(); openHome() }} />} />
         <Route path="/search" element={<SearchPage initialQuery={new URLSearchParams(location.search).get("q") || ""} onOpen={openRepo} onProfile={(username) => navigate(`/${username}`)} />} />
         <Route path="/account" element={<AccountSettingsPage user={user} />} />
+        <Route path="/stars" element={<StarredRepositoriesPage onOpen={openRepo} />} />
         <Route path="/new/repository" element={<CreateRepositoryPage user={user} onCreated={openRepo} />} />
         <Route path="/new/organization" element={<CreateOrganizationPage user={user} onCreated={(name) => navigate(`/${name}`)} />} />
+        <Route path="/orgs/:name/repositories" element={<OrganizationRoutePage user={user} onOpen={openRepo} repositoriesOnly />} />
         <Route path="/:name/followers" element={<FollowListRoutePage kind="followers" />} />
         <Route path="/:name/following" element={<FollowListRoutePage kind="following" />} />
         <Route path="/:scope/:name/*" element={<RepositoryRoutePage user={user} onBack={openHome} onOpen={openRepo} />} />
@@ -151,4 +155,8 @@ export default function App() {
 
 function SidebarItem({ icon, label, collapsed, active, onPress }: { icon: ReactNode; label: string; collapsed: boolean; active: boolean; onPress: () => void }) {
   return <button onClick={onPress} title={collapsed ? label : undefined} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${collapsed ? "justify-center px-2" : ""} ${active ? "bg-zinc-900 font-medium text-white shadow-sm dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"}`}><span className="grid size-5 place-items-center [&_svg]:size-4">{icon}</span>{!collapsed && label}</button>
+}
+
+function AccountMenuItem({ icon, label, onPress, danger = false }: { icon: ReactNode; label: string; onPress: () => void; danger?: boolean }) {
+  return <button onClick={onPress} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${danger ? "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}><span className="[&_svg]:size-4">{icon}</span>{label}</button>
 }

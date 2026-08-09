@@ -147,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/user/settings", s.updatePersonalSettings)
 	mux.HandleFunc("POST /api/user/avatar", s.uploadAvatar)
 	mux.HandleFunc("GET /api/user/ssh-keys", s.sshKeys)
+	mux.HandleFunc("GET /api/user/starred-repos", s.starredRepos)
 	mux.HandleFunc("POST /api/user/ssh-keys", s.addSSHKey)
 	mux.HandleFunc("DELETE /api/user/ssh-keys/{id}", s.deleteSSHKey)
 	mux.HandleFunc("GET /api/scopes", s.scopes)
@@ -544,6 +545,18 @@ func (s *Server) sshKeys(w http.ResponseWriter, r *http.Request) {
 	items, err := s.forge.SSHKeys(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, 500, "无法读取 SSH 密钥。")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) starredRepos(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.repos.StarredByUser(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, 500, "Could not load starred repositories.")
 		return
 	}
 	writeJSON(w, 200, items)
