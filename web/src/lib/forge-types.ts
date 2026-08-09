@@ -2,6 +2,7 @@ export type User = { id: number; username: string; email: string; isAdmin: boole
 export type SiteSettings = { title: string; description: string; allowRegistration: boolean; smtpHost: string; smtpPort: string; smtpUsername: string; smtpPassword: string; smtpFrom: string; captchaEnabled: boolean; captchaSiteKey: string; captchaSecret: string; repositoryRoot: string; gravatarMirror: string }
 export type Repository = { scope: string; name: string; fullName: string; updatedAt: string; forkedFrom?: string; stars: number; forks: number; starred?: boolean }
 export type TreeEntry = { name: string; path: string; type: string }
+export type Language = { name: string; color: string; percentage: number }
 export type Blob = { path: string; content: string; isText: boolean }
 export type GitRef = { name: string; hash: string }
 export type Commit = { hash: string; subject: string; author: string; date: string }

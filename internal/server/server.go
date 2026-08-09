@@ -170,6 +170,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/forks", s.forks)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/star", s.starRepo)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tree", s.tree)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/file-tree", s.fileTree)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/languages", s.languages)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/branches", s.branches)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tags", s.tags)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits", s.commits)
@@ -188,6 +190,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/rename", s.renameRepository)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}", s.deleteRepository)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/raw", s.rawFile)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/file-commit", s.fileCommit)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/blob", s.writeFile)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/archive", s.archive)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues", s.listIssues)
@@ -1606,6 +1610,34 @@ func (s *Server) tree(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
+func (s *Server) fileTree(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.repos.FileTree(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "Tree not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not browse repository.")
+	} else {
+		writeJSON(w, 200, items)
+	}
+}
+func (s *Server) languages(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.repos.Languages(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "Repository ref not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not calculate languages.")
+	} else {
+		writeJSON(w, 200, items)
+	}
+}
 
 func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.requireRepo(w, r)
@@ -1622,6 +1654,39 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, file)
+}
+func (s *Server) rawFile(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	path := r.URL.Query().Get("path")
+	content, err := s.repos.RawFile(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"), path)
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "File not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "Could not read file.")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(path)+`"`)
+	_, _ = w.Write(content)
+}
+func (s *Server) fileCommit(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.repos.FileCommit(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"), r.URL.Query().Get("path"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "File history not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not load file history.")
+	} else {
+		writeJSON(w, 200, item)
+	}
 }
 func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.requireRepo(w, r)

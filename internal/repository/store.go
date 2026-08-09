@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -76,6 +77,11 @@ type CommitDetail struct {
 	Body    string       `json:"body"`
 	Changes string       `json:"changes"`
 	Files   []CommitFile `json:"files"`
+}
+type Language struct {
+	Name       string  `json:"name"`
+	Color      string  `json:"color"`
+	Percentage float64 `json:"percentage"`
 }
 type CommitFile struct {
 	Path   string `json:"path"`
@@ -898,6 +904,22 @@ func (s *Store) Tree(ctx context.Context, repo Repository, ref, directory string
 	}
 	return entries, nil
 }
+func (s *Store) FileTree(ctx context.Context, repo Repository, ref string) ([]TreeEntry, error) {
+	if !safeRef(ref) {
+		return nil, ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "ls-tree", "-r", "--name-only", ref).Output()
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	items := []TreeEntry{}
+	for _, value := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if value != "" {
+			items = append(items, TreeEntry{Name: filepath.Base(value), Path: value, Type: "blob"})
+		}
+	}
+	return items, nil
+}
 func (s *Store) Blob(ctx context.Context, repo Repository, ref, filePath string) (Blob, error) {
 	if !safeGitPath(filePath) || filePath == "" || !safeRef(ref) {
 		return Blob{}, ErrNotFound
@@ -910,6 +932,65 @@ func (s *Store) Blob(ctx context.Context, repo Repository, ref, filePath string)
 		return Blob{Path: filePath, Content: "File is larger than 1 MiB.", IsText: false}, nil
 	}
 	return Blob{Path: filePath, Content: string(output), IsText: utf8.Valid(output) && !strings.Contains(string(output), "\x00")}, nil
+}
+func (s *Store) RawFile(ctx context.Context, repo Repository, ref, filePath string) ([]byte, error) {
+	if !safeGitPath(filePath) || filePath == "" || !safeRef(ref) {
+		return nil, ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "show", ref+":"+filePath).Output()
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return output, nil
+}
+func (s *Store) FileCommit(ctx context.Context, repo Repository, ref, filePath string) (Commit, error) {
+	if !safeGitPath(filePath) || filePath == "" || !safeRef(ref) {
+		return Commit{}, ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "log", "-1", "--format=%h|%s|%an|%aI", ref, "--", filePath).Output()
+	if err != nil || strings.TrimSpace(string(output)) == "" {
+		return Commit{}, ErrNotFound
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(output)), "|", 4)
+	if len(parts) != 4 {
+		return Commit{}, ErrNotFound
+	}
+	return Commit{Hash: parts[0], Subject: parts[1], Author: parts[2], Date: parts[3]}, nil
+}
+func (s *Store) Languages(ctx context.Context, repo Repository, ref string) ([]Language, error) {
+	entries, err := s.FileTree(ctx, repo, ref)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, entry := range entries {
+		name, ext, ok := languageForPath(entry.Path)
+		if ok {
+			counts[name]++
+		} else if ext != "" {
+			counts["Other"]++
+		}
+	}
+	total := 0
+	for _, value := range counts {
+		total += value
+	}
+	if total == 0 {
+		return []Language{}, nil
+	}
+	colors := map[string]string{"Go": "#00ADD8", "TypeScript": "#3178c6", "JavaScript": "#f1e05a", "TSX": "#3178c6", "Vue": "#41b883", "Python": "#3572A5", "CSS": "#563d7c", "HTML": "#e34c26", "Shell": "#89e051", "Markdown": "#083fa1", "JSON": "#292929", "YAML": "#cb171e", "Other": "#8b949e"}
+	items := []Language{}
+	for name, count := range counts {
+		items = append(items, Language{Name: name, Color: colors[name], Percentage: float64(count) * 100 / float64(total)})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Percentage > items[j].Percentage })
+	return items, nil
+}
+func languageForPath(path string) (string, string, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	values := map[string]string{".go": "Go", ".ts": "TypeScript", ".tsx": "TSX", ".js": "JavaScript", ".jsx": "JavaScript", ".vue": "Vue", ".py": "Python", ".css": "CSS", ".scss": "CSS", ".html": "HTML", ".htm": "HTML", ".sh": "Shell", ".md": "Markdown", ".json": "JSON", ".yml": "YAML", ".yaml": "YAML"}
+	name, ok := values[ext]
+	return name, ext, ok
 }
 
 func (s *Store) placeholders(numbers ...int) string {
