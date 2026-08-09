@@ -154,9 +154,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/organizations/{name}", s.organization)
 	mux.HandleFunc("GET /api/organizations/{name}/members", s.organizationMembers)
 	mux.HandleFunc("GET /api/organizations/{name}/repos", s.organizationRepos)
+	mux.HandleFunc("GET /api/organizations/{name}/followers", s.organizationFollowers)
 	mux.HandleFunc("POST /api/organizations/{name}/follow", s.followOrganization)
 	mux.HandleFunc("GET /api/users/{username}", s.userProfile)
 	mux.HandleFunc("GET /api/users/{username}/repos", s.userRepos)
+	mux.HandleFunc("GET /api/users/{username}/followers", s.userFollowers)
+	mux.HandleFunc("GET /api/users/{username}/following", s.userFollowing)
 	mux.HandleFunc("POST /api/users/{username}/follow", s.followUser)
 	mux.HandleFunc("GET /api/notifications", s.notifications)
 	mux.HandleFunc("PATCH /api/notifications/{id}/read", s.readNotification)
@@ -164,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search", s.search)
 	mux.HandleFunc("POST /api/repos", s.createRepo)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/fork", s.forkRepo)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/forks", s.forks)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/star", s.starRepo)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tree", s.tree)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/branches", s.branches)
@@ -171,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits", s.commits)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits/{hash}", s.commit)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/settings", s.repositorySettings)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/license", s.repositoryLicense)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/settings", s.updateRepositorySettings)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/visibility", s.updateRepositoryVisibility)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/collaborators", s.collaborators)
@@ -264,8 +269,12 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Scope string `json:"scope"`
-		Name  string `json:"name"`
+		Scope        string `json:"scope"`
+		Name         string `json:"name"`
+		Description  string `json:"description"`
+		Visibility   string `json:"visibility"`
+		License      string `json:"license"`
+		CreateReadme bool   `json:"createReadme"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "Provide a repository name.")
@@ -288,6 +297,23 @@ func (s *Server) createRepo(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "Could not create repository.")
 	default:
+		settings, err := s.repos.Settings(r.Context(), repo.FullName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not configure repository.")
+			return
+		}
+		settings.Description = strings.TrimSpace(input.Description)
+		if input.Visibility != "" {
+			settings.Visibility = input.Visibility
+		}
+		if err := s.repos.UpdateSettings(r.Context(), repo.FullName, settings); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.repos.Initialize(r.Context(), repo, user.Username, user.Email, input.CreateReadme, input.License); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusCreated, repo)
 	}
 }
@@ -635,6 +661,14 @@ func (s *Server) organizationRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, items)
 }
+func (s *Server) organizationFollowers(w http.ResponseWriter, r *http.Request) {
+	items, err := s.forge.OrganizationFollowers(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 500, "Could not load organization followers.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
 func (s *Server) userProfile(w http.ResponseWriter, r *http.Request) {
 	value, err := s.forge.Profile(r.Context(), r.PathValue("username"))
 	if errors.Is(err, forge.ErrNotFound) {
@@ -670,6 +704,22 @@ func (s *Server) userRepos(w http.ResponseWriter, r *http.Request) {
 	items, err := s.repos.ListByScope(r.PathValue("username"))
 	if err != nil {
 		writeError(w, 500, "Could not load repositories.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) userFollowers(w http.ResponseWriter, r *http.Request) {
+	items, err := s.forge.UserFollowers(r.Context(), r.PathValue("username"))
+	if err != nil {
+		writeError(w, 500, "Could not load followers.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) userFollowing(w http.ResponseWriter, r *http.Request) {
+	items, err := s.forge.UserFollowing(r.Context(), r.PathValue("username"))
+	if err != nil {
+		writeError(w, 500, "Could not load following.")
 		return
 	}
 	writeJSON(w, 200, items)
@@ -719,8 +769,9 @@ func (s *Server) forkRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Scope string `json:"scope"`
-		Name  string `json:"name"`
+		Scope             string `json:"scope"`
+		Name              string `json:"name"`
+		DefaultBranchOnly bool   `json:"defaultBranchOnly"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -733,7 +784,7 @@ func (s *Server) forkRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "Choose your own username or an organization you belong to.")
 		return
 	}
-	repo, err := s.repos.Fork(r.Context(), source, strings.TrimSpace(input.Scope), strings.TrimSpace(input.Name))
+	repo, err := s.repos.Fork(r.Context(), source, strings.TrimSpace(input.Scope), strings.TrimSpace(input.Name), input.DefaultBranchOnly)
 	if errors.Is(err, repository.ErrExists) {
 		writeError(w, 409, "That repository already exists.")
 		return
@@ -750,6 +801,17 @@ func (s *Server) forkRepo(w http.ResponseWriter, r *http.Request) {
 		_ = s.forge.AddNotification(r.Context(), owner.ID, "fork", user.Username+" forked "+source.FullName, "A new fork is available.", "/"+repo.FullName)
 	}
 	writeJSON(w, 201, repo)
+}
+func (s *Server) forks(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.repos.Forks(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "Could not load forks.")
+		return
+	}
+	writeJSON(w, 200, items)
 }
 func (s *Server) starRepo(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -1347,7 +1409,8 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	content, err := s.repos.Archive(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"))
+	format := valueOr(r.URL.Query().Get("format"), "zip")
+	content, contentType, err := s.repos.ArchiveFormat(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"), format)
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, 404, "未找到可下载的提交。")
 		return
@@ -1356,8 +1419,8 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "无法生成 ZIP 文件。 ")
 		return
 	}
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+repo.Name+`.zip"`)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+repo.Name+"-"+valueOr(r.URL.Query().Get("ref"), "HEAD")+"."+format+`"`)
 	w.WriteHeader(200)
 	_, _ = w.Write(content)
 }
@@ -1491,6 +1554,13 @@ func (s *Server) repositorySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, value)
+}
+func (s *Server) repositoryLicense(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, 200, map[string]string{"license": s.repos.DetectLicense(r.Context(), repo, valueOr(r.URL.Query().Get("ref"), "HEAD"))})
 }
 func (s *Server) updateRepositorySettings(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {

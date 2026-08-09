@@ -73,8 +73,14 @@ type Commit struct {
 }
 type CommitDetail struct {
 	Commit
-	Body    string `json:"body"`
-	Changes string `json:"changes"`
+	Body    string       `json:"body"`
+	Changes string       `json:"changes"`
+	Files   []CommitFile `json:"files"`
+}
+type CommitFile struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
+	Patch  string `json:"patch"`
 }
 
 type Store struct {
@@ -180,7 +186,89 @@ func (s *Store) Create(ctx context.Context, scope, name string) (Repository, err
 	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: path}, nil
 }
 
-func (s *Store) Fork(ctx context.Context, source Repository, scope, name string) (Repository, error) {
+// Initialize creates the optional starter files in one initial commit.
+func (s *Store) Initialize(ctx context.Context, repo Repository, author, email string, createReadme bool, license string) error {
+	license, licenseBody := normalizeLicense(license)
+	if license == "" && strings.TrimSpace(licenseBody) == "" && !createReadme {
+		return nil
+	}
+	if license == "invalid" {
+		return errors.New("unsupported license")
+	}
+	work, err := os.MkdirTemp("", "kohame-init-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+	if output, err := exec.CommandContext(ctx, "git", "clone", repo.Path, work).CombinedOutput(); err != nil {
+		return fmt.Errorf("clone repository: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := exec.CommandContext(ctx, "git", "-C", work, "checkout", "-B", "main").CombinedOutput(); err != nil {
+		return fmt.Errorf("create default branch: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if createReadme {
+		readme := "# " + repo.Name + "\n\n"
+		if err := os.WriteFile(filepath.Join(work, "README.md"), []byte(readme), 0o644); err != nil {
+			return err
+		}
+	}
+	if licenseBody != "" {
+		if err := os.WriteFile(filepath.Join(work, "LICENSE"), []byte(licenseBody), 0o644); err != nil {
+			return err
+		}
+	}
+	for _, args := range [][]string{{"config", "user.name", author}, {"config", "user.email", email}, {"add", "--", "."}, {"commit", "-m", "Initial commit"}} {
+		if output, err := exec.CommandContext(ctx, "git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
+			return fmt.Errorf("initialize repository: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, err := exec.CommandContext(ctx, "git", "-C", work, "push", "origin", "HEAD:refs/heads/main").CombinedOutput(); err != nil {
+		return fmt.Errorf("push initial commit: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	_, _ = exec.CommandContext(ctx, "git", "-C", repo.Path, "symbolic-ref", "HEAD", "refs/heads/main").CombinedOutput()
+	_, _ = s.db.ExecContext(ctx, `UPDATE repositories SET updated_at=`+s.placeholders(1)+` WHERE name=`+s.placeholders(2), time.Now().UTC(), repo.FullName)
+	return nil
+}
+
+func normalizeLicense(value string) (string, string) {
+	switch strings.TrimSpace(strings.ToUpper(value)) {
+	case "", "NONE", "NO LICENSE":
+		return "", ""
+	case "MIT":
+		return "MIT", "MIT License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND.\n"
+	case "APACHE-2.0", "APACHE 2.0":
+		return "Apache-2.0", "Apache License\nVersion 2.0, January 2004\nhttp://www.apache.org/licenses/\n\nTERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License.\n"
+	case "GPL-3.0", "GPL-3.0-ONLY", "GPLV3":
+		return "GPL-3.0", "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License.\n"
+	case "BSD-3-CLAUSE", "BSD 3-CLAUSE":
+		return "BSD-3-Clause", "BSD 3-Clause License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met.\n"
+	default:
+		return "invalid", ""
+	}
+}
+
+func (s *Store) DetectLicense(ctx context.Context, repo Repository, ref string) string {
+	for _, name := range []string{"LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"} {
+		content, err := s.Blob(ctx, repo, ref, name)
+		if err != nil || !content.IsText {
+			continue
+		}
+		value := strings.ToLower(content.Content)
+		switch {
+		case strings.Contains(value, "mit license"):
+			return "MIT"
+		case strings.Contains(value, "apache license") && strings.Contains(value, "version 2.0"):
+			return "Apache-2.0"
+		case strings.Contains(value, "gnu general public license") && strings.Contains(value, "version 3"):
+			return "GPL-3.0"
+		case strings.Contains(value, "bsd 3-clause license") || strings.Contains(value, "redistribution and use in source and binary forms"):
+			return "BSD-3-Clause"
+		}
+	}
+	return ""
+}
+
+func (s *Store) Fork(ctx context.Context, source Repository, scope, name string, defaultBranchOnly bool) (Repository, error) {
 	if !validPart(scope) || !validPart(name) {
 		return Repository{}, ErrInvalidName
 	}
@@ -194,7 +282,16 @@ func (s *Store) Fork(ctx context.Context, source Repository, scope, name string)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return Repository{}, err
 	}
-	if output, err := exec.CommandContext(ctx, "git", "clone", "--bare", source.Path, target).CombinedOutput(); err != nil {
+	cloneArgs := []string{"clone", "--bare"}
+	if defaultBranchOnly {
+		settings, err := s.Settings(ctx, source.FullName)
+		if err != nil {
+			return Repository{}, err
+		}
+		cloneArgs = append(cloneArgs, "--single-branch", "--branch", settings.DefaultBranch)
+	}
+	cloneArgs = append(cloneArgs, source.Path, target)
+	if output, err := exec.CommandContext(ctx, "git", cloneArgs...).CombinedOutput(); err != nil {
 		return Repository{}, fmt.Errorf("fork repository: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	now := time.Now().UTC()
@@ -207,6 +304,27 @@ func (s *Store) Fork(ctx context.Context, source Repository, scope, name string)
 	settings, _ := s.Settings(ctx, source.FullName)
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,homepage_url,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,allow_forks,archived) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)+`)`, fullName, settings.Description, settings.HomepageURL, settings.Visibility, settings.DefaultBranch, strings.Join(settings.Topics, ","), settings.IssuesEnabled, settings.PullsEnabled, settings.ReleasesEnabled, settings.WikiEnabled, settings.AutoCloseIssues, settings.AllowForks, settings.Archived)
 	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: target, ForkedFrom: source.FullName}, nil
+}
+
+func (s *Store) Forks(ctx context.Context, parent string) ([]Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repository_name FROM repository_forks WHERE parent_name=`+s.placeholders(1)+` ORDER BY repository_name`, parent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Repository{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		item, err := s.GetFullName(name)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) ToggleStar(ctx context.Context, repositoryName string, userID int64) (bool, int, error) {
@@ -513,17 +631,70 @@ func (s *Store) Commit(ctx context.Context, repo Repository, hash string) (Commi
 			changes = strings.TrimSpace(segments[1])
 		}
 	}
-	return CommitDetail{Commit: Commit{Hash: fields[0], Subject: fields[1], Author: fields[2], Date: fields[3]}, Body: body, Changes: changes}, nil
+	patch, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "show", "--format=", "--find-renames", "--no-ext-diff", "--patch", hash).Output()
+	if err != nil {
+		return CommitDetail{}, ErrNotFound
+	}
+	return CommitDetail{Commit: Commit{Hash: fields[0], Subject: fields[1], Author: fields[2], Date: fields[3]}, Body: body, Changes: changes, Files: parseCommitFiles(string(patch))}, nil
+}
+
+func parseCommitFiles(patch string) []CommitFile {
+	files := []CommitFile{}
+	var current *CommitFile
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			if current != nil {
+				files = append(files, *current)
+			}
+			parts := strings.Split(line, " ")
+			path := ""
+			if len(parts) >= 4 {
+				path = strings.TrimPrefix(parts[3], "b/")
+			}
+			current = &CommitFile{Path: path, Status: "modified", Patch: line}
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "new file mode"):
+			current.Status = "added"
+		case strings.HasPrefix(line, "deleted file mode"):
+			current.Status = "deleted"
+		case strings.HasPrefix(line, "rename from "):
+			current.Status = "renamed"
+		case strings.HasPrefix(line, "+++ /dev/null"):
+			current.Status = "deleted"
+		case strings.HasPrefix(line, "+++ b/"):
+			current.Path = strings.TrimPrefix(line, "+++ b/")
+		}
+		current.Patch += "\n" + line
+	}
+	if current != nil {
+		files = append(files, *current)
+	}
+	return files
 }
 func (s *Store) Archive(ctx context.Context, repo Repository, ref string) ([]byte, error) {
+	content, _, err := s.ArchiveFormat(ctx, repo, ref, "zip")
+	return content, err
+}
+func (s *Store) ArchiveFormat(ctx context.Context, repo Repository, ref, format string) ([]byte, string, error) {
 	if !safeRef(ref) {
-		return nil, ErrNotFound
+		return nil, "", ErrNotFound
 	}
-	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "archive", "--format=zip", "--prefix="+repo.Name+"/", ref).Output()
+	if format != "zip" && format != "tar.gz" {
+		return nil, "", ErrNotFound
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "archive", "--format="+format, "--prefix="+repo.Name+"/", ref).Output()
 	if err != nil {
-		return nil, ErrNotFound
+		return nil, "", ErrNotFound
 	}
-	return output, nil
+	if format == "tar.gz" {
+		return output, "application/gzip", nil
+	}
+	return output, "application/zip", nil
 }
 func (s *Store) WriteFile(ctx context.Context, repo Repository, branch, filePath, content, author, email, message string) (Commit, error) {
 	if !safeRef(branch) || !safeGitPath(filePath) || filePath == "" || len(content) > 1<<20 {

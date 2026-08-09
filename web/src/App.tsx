@@ -8,7 +8,7 @@ import type { Repository, SiteSettings, User } from "@/lib/forge-types"
 import HomePage from "@/pages/HomePage"
 import NotificationsPage from "@/pages/NotificationsPage"
 import OrganizationRoutePage from "@/pages/OrganizationRoutePage"
-import ProfileRoutePage from "@/pages/ProfileRoutePage"
+import FollowListRoutePage from "@/pages/FollowListRoutePage"
 import RepositoryRoutePage from "@/pages/RepositoryRoutePage"
 import { SearchPage } from "@/pages/SearchPage"
 import SiteSettingsPage from "@/pages/SiteSettingsPage"
@@ -136,10 +136,11 @@ export default function App() {
         <Route path="/search" element={<SearchPage initialQuery={new URLSearchParams(location.search).get("q") || ""} onOpen={openRepo} onProfile={(username) => navigate(`/${username}`)} />} />
         <Route path="/account" element={<AccountSettingsPage user={user} />} />
         <Route path="/new/repository" element={<CreateRepositoryPage user={user} onCreated={openRepo} />} />
-        <Route path="/new/organization" element={<CreateOrganizationPage user={user} onCreated={(name) => navigate(`/orgs/${name}`)} />} />
-        <Route path="/orgs/:name" element={<OrganizationRoutePage user={user} onOpen={openRepo} />} />
+        <Route path="/new/organization" element={<CreateOrganizationPage user={user} onCreated={(name) => navigate(`/${name}`)} />} />
+        <Route path="/:name/followers" element={<FollowListRoutePage kind="followers" />} />
+        <Route path="/:name/following" element={<FollowListRoutePage kind="following" />} />
         <Route path="/:scope/:name/*" element={<RepositoryRoutePage user={user} onBack={openHome} onOpen={openRepo} />} />
-        <Route path="/:username" element={<ProfileRoutePage user={user} onOpen={openRepo} />} />
+        <Route path="/:username" element={<OrganizationRoutePage user={user} onOpen={openRepo} />} />
         <Route path="*" element={dashboard} />
           </Routes>
         </div>

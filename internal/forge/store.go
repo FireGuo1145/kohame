@@ -112,6 +112,10 @@ type OrganizationMember struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
 }
+type FollowTarget struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
 type Notification struct {
 	ID        int64     `json:"id"`
 	Kind      string    `json:"kind"`
@@ -193,6 +197,13 @@ func (s *Store) CreateOrganization(ctx context.Context, user User, name string) 
 	name = strings.TrimSpace(strings.ToLower(name))
 	if len(name) < 2 || !validScope(name) {
 		return Organization{}, fmt.Errorf("organization name is invalid")
+	}
+	var users int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE username=`+s.arg(1), name).Scan(&users); err != nil {
+		return Organization{}, err
+	}
+	if users > 0 {
+		return Organization{}, ErrConflict
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -301,6 +312,23 @@ func (s *Store) OrganizationMembers(ctx context.Context, name string) ([]Organiz
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+func (s *Store) OrganizationFollowers(ctx context.Context, name string) ([]FollowTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.username FROM organization_follows f JOIN organizations o ON o.id=f.organization_id JOIN users u ON u.id=f.follower_id WHERE o.name=`+s.arg(1)+` ORDER BY u.username`, strings.ToLower(strings.TrimSpace(name)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FollowTarget{}
+	for rows.Next() {
+		var value FollowTarget
+		if err := rows.Scan(&value.Name); err != nil {
+			return nil, err
+		}
+		value.Type = "user"
+		items = append(items, value)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) createUser(ctx context.Context, username, email, password string, admin bool) (User, error) {
@@ -970,6 +998,39 @@ func (s *Store) UserFollowed(ctx context.Context, followerID int64, username str
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_follows f JOIN users u ON u.id=f.target_user_id WHERE f.follower_id=`+s.arg(1)+` AND u.username=`+s.arg(2), followerID, strings.ToLower(strings.TrimSpace(username))).Scan(&count)
 	return count > 0, err
+}
+func (s *Store) UserFollowers(ctx context.Context, username string) ([]FollowTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT follower.username FROM user_follows f JOIN users target ON target.id=f.target_user_id JOIN users follower ON follower.id=f.follower_id WHERE target.username=`+s.arg(1)+` ORDER BY follower.username`, strings.ToLower(strings.TrimSpace(username)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FollowTarget{}
+	for rows.Next() {
+		var value FollowTarget
+		if err := rows.Scan(&value.Name); err != nil {
+			return nil, err
+		}
+		value.Type = "user"
+		items = append(items, value)
+	}
+	return items, rows.Err()
+}
+func (s *Store) UserFollowing(ctx context.Context, username string) ([]FollowTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.username,'user' FROM user_follows f JOIN users source ON source.id=f.follower_id JOIN users u ON u.id=f.target_user_id WHERE source.username=`+s.arg(1)+` UNION ALL SELECT o.name,'organization' FROM organization_follows f JOIN users source ON source.id=f.follower_id JOIN organizations o ON o.id=f.organization_id WHERE source.username=`+s.arg(1)+` ORDER BY 1`, strings.ToLower(strings.TrimSpace(username)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FollowTarget{}
+	for rows.Next() {
+		var value FollowTarget
+		if err := rows.Scan(&value.Name, &value.Type); err != nil {
+			return nil, err
+		}
+		items = append(items, value)
+	}
+	return items, rows.Err()
 }
 func (s *Store) gravatarURL(ctx context.Context, email string) string {
 	settings, err := s.Settings(ctx)

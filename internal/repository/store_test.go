@@ -55,3 +55,29 @@ func TestRenameMovesRepositoryAndSettings(t *testing.T) {
 		t.Fatalf("settings after rename = %#v, want preserved settings %#v", updated, settings)
 	}
 }
+
+func TestInitializeCreatesReadmeAndDetectableLicense(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := repository.NewStore(filepath.Join(root, "repos"), db, "sqlite")
+	repo, err := store.Create(context.Background(), "alice", "starter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Initialize(context.Background(), repo, "alice", "alice@example.com", true, "MIT"); err != nil {
+		t.Fatal(err)
+	}
+	readme, err := store.Blob(context.Background(), repo, "main", "README.md")
+	if err != nil || !readme.IsText {
+		t.Fatalf("README lookup = %#v, %v", readme, err)
+	}
+	if license := store.DetectLicense(context.Background(), repo, "main"); license != "MIT" {
+		t.Fatalf("detected license = %q, want MIT", license)
+	}
+}

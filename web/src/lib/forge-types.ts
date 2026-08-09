@@ -5,7 +5,8 @@ export type TreeEntry = { name: string; path: string; type: string }
 export type Blob = { path: string; content: string; isText: boolean }
 export type GitRef = { name: string; hash: string }
 export type Commit = { hash: string; subject: string; author: string; date: string }
-export type CommitDetail = Commit & { body: string; changes: string }
+export type CommitFile = { path: string; status: "added" | "modified" | "deleted" | "renamed"; patch: string }
+export type CommitDetail = Commit & { body: string; changes: string; files: CommitFile[] }
 export type RepositorySettings = {
   description: string
   homepageUrl: string
@@ -36,3 +37,4 @@ export type Notification = { id: number; kind: string; title: string; body: stri
 export type Profile = { username: string; displayName: string; bio: string; location: string; website: string; avatarUrl: string; createdAt: string; repositories: number; stars: number; followers: number; following: number; followed: boolean }
 export type Organization = { name: string; role?: string; followers: number; followed: boolean }
 export type OrganizationMember = { username: string; role: string }
+export type FollowTarget = { name: string; type: "user" | "organization" }
