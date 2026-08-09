@@ -40,6 +40,7 @@ type Blob struct {
 }
 type Settings struct {
 	Description     string   `json:"description"`
+	HomepageURL     string   `json:"homepageUrl"`
 	Visibility      string   `json:"visibility"`
 	DefaultBranch   string   `json:"defaultBranch"`
 	Topics          []string `json:"topics"`
@@ -48,6 +49,7 @@ type Settings struct {
 	ReleasesEnabled bool     `json:"releasesEnabled"`
 	WikiEnabled     bool     `json:"wikiEnabled"`
 	AutoCloseIssues bool     `json:"autoCloseIssues"`
+	AllowForks      bool     `json:"allowForks"`
 	Archived        bool     `json:"archived"`
 }
 type Collaborator struct {
@@ -174,7 +176,7 @@ func (s *Store) Create(ctx context.Context, scope, name string) (Repository, err
 		}
 		return Repository{}, fmt.Errorf("store repository metadata: %w", err)
 	}
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics) VALUES (`+s.placeholders(1, 2, 3, 4, 5)+`)`, fullName, "", "private", "main", "")
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,homepage_url,visibility,default_branch,topics,allow_forks) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7)+`)`, fullName, "", "", "private", "main", "", true)
 	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: path}, nil
 }
 
@@ -203,7 +205,7 @@ func (s *Store) Fork(ctx context.Context, source Repository, scope, name string)
 		return Repository{}, err
 	}
 	settings, _ := s.Settings(ctx, source.FullName)
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,archived) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)+`)`, fullName, settings.Description, settings.Visibility, settings.DefaultBranch, strings.Join(settings.Topics, ","), settings.IssuesEnabled, settings.PullsEnabled, settings.ReleasesEnabled, settings.WikiEnabled, settings.AutoCloseIssues, settings.Archived)
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,homepage_url,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,allow_forks,archived) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)+`)`, fullName, settings.Description, settings.HomepageURL, settings.Visibility, settings.DefaultBranch, strings.Join(settings.Topics, ","), settings.IssuesEnabled, settings.PullsEnabled, settings.ReleasesEnabled, settings.WikiEnabled, settings.AutoCloseIssues, settings.AllowForks, settings.Archived)
 	return Repository{Scope: scope, Name: name, FullName: fullName, UpdatedAt: now, Path: target, ForkedFrom: source.FullName}, nil
 }
 
@@ -236,9 +238,9 @@ func (s *Store) Starred(ctx context.Context, repositoryName string, userID int64
 func (s *Store) Settings(ctx context.Context, fullName string) (Settings, error) {
 	var value Settings
 	var topics string
-	err := s.db.QueryRowContext(ctx, `SELECT description,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,archived FROM repository_settings WHERE repository_name=`+s.placeholders(1), fullName).Scan(&value.Description, &value.Visibility, &value.DefaultBranch, &topics, &value.IssuesEnabled, &value.PullsEnabled, &value.ReleasesEnabled, &value.WikiEnabled, &value.AutoCloseIssues, &value.Archived)
+	err := s.db.QueryRowContext(ctx, `SELECT description,homepage_url,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,allow_forks,archived FROM repository_settings WHERE repository_name=`+s.placeholders(1), fullName).Scan(&value.Description, &value.HomepageURL, &value.Visibility, &value.DefaultBranch, &topics, &value.IssuesEnabled, &value.PullsEnabled, &value.ReleasesEnabled, &value.WikiEnabled, &value.AutoCloseIssues, &value.AllowForks, &value.Archived)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Settings{Visibility: "private", DefaultBranch: "main", Topics: []string{}, IssuesEnabled: true, PullsEnabled: true, ReleasesEnabled: true}, nil
+		return Settings{Visibility: "private", DefaultBranch: "main", Topics: []string{}, IssuesEnabled: true, PullsEnabled: true, ReleasesEnabled: true, AllowForks: true}, nil
 	}
 	if err != nil {
 		return value, err
@@ -254,7 +256,12 @@ func (s *Store) UpdateSettings(ctx context.Context, fullName string, value Setti
 		return errors.New("invalid default branch")
 	}
 	topics := splitTopics(strings.Join(value.Topics, ","))
-	_, err := s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,archived) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)+`) ON CONFLICT (repository_name) DO UPDATE SET description=EXCLUDED.description,visibility=EXCLUDED.visibility,default_branch=EXCLUDED.default_branch,topics=EXCLUDED.topics,issues_enabled=EXCLUDED.issues_enabled,pulls_enabled=EXCLUDED.pulls_enabled,releases_enabled=EXCLUDED.releases_enabled,wiki_enabled=EXCLUDED.wiki_enabled,auto_close_issues=EXCLUDED.auto_close_issues,archived=EXCLUDED.archived`, fullName, strings.TrimSpace(value.Description), value.Visibility, value.DefaultBranch, strings.Join(topics, ","), value.IssuesEnabled, value.PullsEnabled, value.ReleasesEnabled, value.WikiEnabled, value.AutoCloseIssues, value.Archived)
+	if value.HomepageURL = strings.TrimSpace(value.HomepageURL); value.HomepageURL != "" {
+		if !strings.HasPrefix(value.HomepageURL, "https://") && !strings.HasPrefix(value.HomepageURL, "http://") {
+			return errors.New("homepage URL must start with http:// or https://")
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO repository_settings (repository_name,description,homepage_url,visibility,default_branch,topics,issues_enabled,pulls_enabled,releases_enabled,wiki_enabled,auto_close_issues,allow_forks,archived) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)+`) ON CONFLICT (repository_name) DO UPDATE SET description=EXCLUDED.description,homepage_url=EXCLUDED.homepage_url,visibility=EXCLUDED.visibility,default_branch=EXCLUDED.default_branch,topics=EXCLUDED.topics,issues_enabled=EXCLUDED.issues_enabled,pulls_enabled=EXCLUDED.pulls_enabled,releases_enabled=EXCLUDED.releases_enabled,wiki_enabled=EXCLUDED.wiki_enabled,auto_close_issues=EXCLUDED.auto_close_issues,allow_forks=EXCLUDED.allow_forks,archived=EXCLUDED.archived`, fullName, strings.TrimSpace(value.Description), value.HomepageURL, value.Visibility, value.DefaultBranch, strings.Join(topics, ","), value.IssuesEnabled, value.PullsEnabled, value.ReleasesEnabled, value.WikiEnabled, value.AutoCloseIssues, value.AllowForks, value.Archived)
 	return err
 }
 
@@ -352,13 +359,27 @@ func (s *Store) Transfer(ctx context.Context, repo Repository, targetScope strin
 	if !validPart(targetScope) || targetScope == repo.Scope {
 		return Repository{}, errors.New("invalid target scope")
 	}
-	nextName := targetScope + "/" + repo.Name
-	if _, err := s.Get(targetScope, repo.Name); err == nil {
+	return s.move(ctx, repo, targetScope, repo.Name)
+}
+
+// Rename changes a repository's name without changing its owner or organization.
+// It moves the bare Git directory and every repository-scoped record atomically
+// from the caller's perspective; the original path is restored if metadata fails.
+func (s *Store) Rename(ctx context.Context, repo Repository, newName string) (Repository, error) {
+	if !validPart(newName) || newName == repo.Name {
+		return Repository{}, errors.New("invalid repository name")
+	}
+	return s.move(ctx, repo, repo.Scope, newName)
+}
+
+func (s *Store) move(ctx context.Context, repo Repository, targetScope, targetName string) (Repository, error) {
+	nextName := targetScope + "/" + targetName
+	if _, err := s.Get(targetScope, targetName); err == nil {
 		return Repository{}, ErrExists
 	} else if !errors.Is(err, ErrNotFound) {
 		return Repository{}, err
 	}
-	nextPath := filepath.Join(s.root, targetScope, repo.Name+".git")
+	nextPath := filepath.Join(s.root, targetScope, targetName+".git")
 	if err := os.MkdirAll(filepath.Dir(nextPath), 0o755); err != nil {
 		return Repository{}, err
 	}
@@ -391,7 +412,7 @@ func (s *Store) Transfer(ctx context.Context, repo Repository, targetScope strin
 		_ = os.Rename(nextPath, repo.Path)
 		return Repository{}, err
 	}
-	return s.Get(targetScope, repo.Name)
+	return s.Get(targetScope, targetName)
 }
 
 func (s *Store) Delete(ctx context.Context, repo Repository) error {

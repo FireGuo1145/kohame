@@ -180,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/branch-protections/{branch}", s.setProtectedBranch)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/branch-protections/{branch}", s.removeProtectedBranch)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/transfer", s.transferRepository)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/rename", s.renameRepository)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}", s.deleteRepository)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/blob", s.writeFile)
@@ -708,6 +709,13 @@ func (s *Server) forkRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	source, ok := s.requireRepo(w, r)
 	if !ok {
+		return
+	}
+	if settings, err := s.repos.Settings(r.Context(), source.FullName); err != nil {
+		writeError(w, 500, "Could not load repository settings.")
+		return
+	} else if !settings.AllowForks {
+		writeError(w, 403, "Forking is disabled for this repository.")
 		return
 	}
 	var input struct {
@@ -1671,6 +1679,39 @@ func (s *Server) transferRepository(w http.ResponseWriter, r *http.Request) {
 	next, err := s.repos.Transfer(r.Context(), repo, strings.TrimSpace(input.TargetScope))
 	if errors.Is(err, repository.ErrExists) {
 		writeError(w, 409, "目标空间已有同名仓库。")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 200, next)
+	}
+}
+func (s *Server) renameRepository(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.requireRepo(w, r)
+	if !ok {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权重命名仓库。")
+		return
+	}
+	var input struct {
+		NewName     string `json:"newName"`
+		ConfirmName string `json:"confirmName"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.ConfirmName != repo.FullName {
+		writeError(w, 400, "请输入当前完整仓库名称以确认。")
+		return
+	}
+	next, err := s.repos.Rename(r.Context(), repo, strings.TrimSpace(input.NewName))
+	if errors.Is(err, repository.ErrExists) {
+		writeError(w, 409, "当前空间已有同名仓库。")
 	} else if err != nil {
 		writeError(w, 400, err.Error())
 	} else {

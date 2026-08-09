@@ -8,6 +8,7 @@ export type Commit = { hash: string; subject: string; author: string; date: stri
 export type CommitDetail = Commit & { body: string; changes: string }
 export type RepositorySettings = {
   description: string
+  homepageUrl: string
   visibility: "public" | "private"
   defaultBranch: string
   topics: string[]
@@ -16,6 +17,7 @@ export type RepositorySettings = {
   releasesEnabled: boolean
   wikiEnabled: boolean
   autoCloseIssues: boolean
+  allowForks: boolean
   archived: boolean
 }
 export type Collaborator = { username: string; permission: "read" | "write" | "maintain" | "admin" }

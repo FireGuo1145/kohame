@@ -45,7 +45,7 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS activities (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, user_id BIGINT NOT NULL, kind VARCHAR(32) NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS organizations (id ` + idColumn + `, name VARCHAR(80) UNIQUE NOT NULL, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS organization_members (organization_id BIGINT NOT NULL, user_id BIGINT NOT NULL, role VARCHAR(16) NOT NULL, PRIMARY KEY (organization_id, user_id))`,
-		`CREATE TABLE IF NOT EXISTS repository_settings (repository_name VARCHAR(161) PRIMARY KEY, description TEXT NOT NULL DEFAULT '', visibility VARCHAR(16) NOT NULL DEFAULT 'private', default_branch VARCHAR(255) NOT NULL DEFAULT 'main', topics TEXT NOT NULL DEFAULT '', issues_enabled BOOLEAN NOT NULL DEFAULT TRUE, pulls_enabled BOOLEAN NOT NULL DEFAULT TRUE, releases_enabled BOOLEAN NOT NULL DEFAULT TRUE, wiki_enabled BOOLEAN NOT NULL DEFAULT FALSE, auto_close_issues BOOLEAN NOT NULL DEFAULT FALSE, archived BOOLEAN NOT NULL DEFAULT FALSE)`,
+		`CREATE TABLE IF NOT EXISTS repository_settings (repository_name VARCHAR(161) PRIMARY KEY, description TEXT NOT NULL DEFAULT '', homepage_url VARCHAR(2048) NOT NULL DEFAULT '', visibility VARCHAR(16) NOT NULL DEFAULT 'private', default_branch VARCHAR(255) NOT NULL DEFAULT 'main', topics TEXT NOT NULL DEFAULT '', issues_enabled BOOLEAN NOT NULL DEFAULT TRUE, pulls_enabled BOOLEAN NOT NULL DEFAULT TRUE, releases_enabled BOOLEAN NOT NULL DEFAULT TRUE, wiki_enabled BOOLEAN NOT NULL DEFAULT FALSE, auto_close_issues BOOLEAN NOT NULL DEFAULT FALSE, allow_forks BOOLEAN NOT NULL DEFAULT TRUE, archived BOOLEAN NOT NULL DEFAULT FALSE)`,
 		`CREATE TABLE IF NOT EXISTS repository_forks (repository_name VARCHAR(161) PRIMARY KEY, parent_name VARCHAR(161) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS repository_stars (repository_name VARCHAR(161) NOT NULL, user_id BIGINT NOT NULL, created_at TIMESTAMP NOT NULL, PRIMARY KEY (repository_name, user_id))`,
 		`CREATE TABLE IF NOT EXISTS email_verifications (token_hash VARCHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, expires_at TIMESTAMP NOT NULL)`,
@@ -77,11 +77,13 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		return nil, fmt.Errorf("migrate user settings: %w", err)
 	}
 	for _, statement := range []string{
+		`ALTER TABLE repository_settings ADD COLUMN homepage_url VARCHAR(2048) NOT NULL DEFAULT ''`,
 		`ALTER TABLE repository_settings ADD COLUMN issues_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
 		`ALTER TABLE repository_settings ADD COLUMN pulls_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
 		`ALTER TABLE repository_settings ADD COLUMN releases_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
 		`ALTER TABLE repository_settings ADD COLUMN wiki_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE repository_settings ADD COLUMN auto_close_issues BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE repository_settings ADD COLUMN allow_forks BOOLEAN NOT NULL DEFAULT TRUE`,
 		`ALTER TABLE repository_settings ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE`,
 	} {
 		if _, err := db.Exec(statement); err != nil && !isDuplicateColumn(err) {
