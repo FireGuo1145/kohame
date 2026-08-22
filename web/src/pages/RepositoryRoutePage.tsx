@@ -1732,10 +1732,20 @@ function WorkflowWorkspace({
   const [items, setItems] = useState<Workflow[]>([])
   const [runs, setRuns] = useState<WorkflowRun[]>([])
   const [workflowName, setWorkflowName] = useState("")
-  const [config, setConfig] = useState(
-    '{\n  "on": ["push", "workflow_dispatch"],\n  "steps": [{"run": "echo hello"}]\n}'
-  )
+  const [workflowID, setWorkflowID] = useState(0)
+  const [events, setEvents] = useState<string[]>(["push", "workflow_dispatch"])
+  const [steps, setSteps] = useState<{ name: string; run: string }[]>([
+    { name: "Build", run: "echo hello" },
+  ])
+  const [enabled, setEnabled] = useState(true)
   const [message, setMessage] = useState("")
+  const eventOptions = [
+    ["push", "推送"],
+    ["issues", "议题"],
+    ["pull_request", "拉取请求"],
+    ["release", "发布"],
+    ["workflow_dispatch", "手动运行"],
+  ] as const
   const load = async () => {
     const [next, history] = await Promise.all([
       api<Workflow[]>(`/api/repos/${name}/workflows`),
@@ -1749,17 +1759,63 @@ function WorkflowWorkspace({
       setMessage(cause instanceof Error ? cause.message : "无法加载工作流。")
     )
   }, [name])
+  const reset = () => {
+    setWorkflowID(0)
+    setWorkflowName("")
+    setEvents(["push", "workflow_dispatch"])
+    setSteps([{ name: "Build", run: "echo hello" }])
+    setEnabled(true)
+  }
+  const yamlString = () => {
+    const quote = (value: string) => JSON.stringify(value)
+    const lines = [`name: ${quote(workflowName.trim() || "Workflow")}`, "on:"]
+    events.forEach((event) => lines.push(`  - ${event}`))
+    lines.push("jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps:")
+    steps.forEach((step, index) => {
+      lines.push(`      - name: ${quote(step.name.trim() || `Step ${index + 1}`)}`)
+      lines.push(`        run: ${quote(step.run)}`)
+    })
+    return lines.join("\n") + "\n"
+  }
   const save = async () => {
+    if (!workflowName.trim() || !events.length || !steps.some((step) => step.run.trim())) {
+      setMessage("请填写名称、至少一个触发事件和一个步骤。")
+      return
+    }
     try {
       const item = await api<Workflow>(`/api/repos/${name}/workflows/0`, {
         method: "PUT",
-        body: JSON.stringify({ name: workflowName, config, enabled: true }),
+        body: JSON.stringify({
+          id: workflowID,
+          name: workflowName,
+          config: yamlString(),
+          enabled,
+          path: items.find((entry) => entry.id === workflowID)?.path,
+        }),
       })
-      setItems([item, ...items])
-      setWorkflowName("")
+      setItems(workflowID ? items.map((entry) => (entry.id === item.id ? item : entry)) : [item, ...items])
+      reset()
       setMessage("工作流已保存。")
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "无法保存工作流。")
+    }
+  }
+  const edit = (item: Workflow) => {
+    setWorkflowID(item.id)
+    setWorkflowName(item.name)
+    setEvents(item.events?.length ? item.events : ["push", "workflow_dispatch"])
+    setSteps(item.steps?.length ? item.steps.map((step, index) => ({ name: step.name || `Step ${index + 1}`, run: step.run })) : [{ name: "Build", run: "" }])
+    setEnabled(item.enabled)
+    setMessage("")
+  }
+  const remove = async (item: Workflow) => {
+    try {
+      await api(`/api/repos/${name}/workflows/${item.id}`, { method: "DELETE" })
+      setItems(items.filter((entry) => entry.id !== item.id))
+      if (workflowID === item.id) reset()
+      setMessage("工作流已删除。")
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "无法删除工作流。")
     }
   }
   const run = async () => {
@@ -1780,7 +1836,7 @@ function WorkflowWorkspace({
         <div>
           <h2 className="text-xl font-semibold">工作流</h2>
           <p className="mt-1 text-sm text-zinc-500">
-            使用 JSON 定义触发事件和 shell 步骤。
+            使用 GitHub Actions 格式定义触发事件和步骤，文件保存在站点设置指定的目录中。
           </p>
         </div>
         {user && (
@@ -1796,25 +1852,42 @@ function WorkflowWorkspace({
         </p>
       )}{" "}
       {user && (
-        <section className="space-y-3 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+        <section className="space-y-4 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
           <Field
-            label="工作流名称"
+            label={workflowID ? "编辑工作流" : "新建工作流"}
             value={workflowName}
             onChange={setWorkflowName}
             placeholder="build"
           />
-          <label className="block text-sm font-medium">
-            配置
-            <textarea
-              value={config}
-              onChange={(event) => setConfig(event.target.value)}
-              className="mt-1.5 min-h-44 w-full rounded-lg border border-zinc-200 bg-transparent p-3 font-mono text-xs dark:border-zinc-700"
-            />
-          </label>
+          <div>
+            <p className="mb-2 text-sm font-medium">触发事件</p>
+            <div className="flex flex-wrap gap-2">
+              {eventOptions.map(([event, label]) => (
+                <label key={event} className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700">
+                  <input type="checkbox" checked={events.includes(event)} onChange={() => setEvents(events.includes(event) ? events.filter((value) => value !== event) : [...events, event])} />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between"><p className="text-sm font-medium">步骤</p><Button variant="outline" size="sm" onPress={() => setSteps([...steps, { name: `Step ${steps.length + 1}`, run: "" }])}><Plus />添加步骤</Button></div>
+            {steps.map((step, index) => (
+              <div key={index} className="grid gap-2 sm:grid-cols-[160px_1fr_auto]">
+                <Field label="名称" value={step.name} onChange={(value) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, name: value } : entry))} placeholder={`Step ${index + 1}`} />
+                <label className="block text-sm font-medium">Shell 命令<textarea value={step.run} onChange={(event) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, run: event.target.value } : entry))} className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700" /></label>
+                <Button variant="ghost" aria-label="删除步骤" onPress={() => setSteps(steps.filter((_, stepIndex) => stepIndex !== index))}><Trash2 /></Button>
+              </div>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用工作流</label>
+          <div className="flex gap-2">
           <Button onPress={() => void save()} isDisabled={!workflowName.trim()}>
             <Plus />
-            保存工作流
+            {workflowID ? "保存修改" : "新建工作流"}
           </Button>
+          {workflowID > 0 && <Button variant="outline" onPress={reset}>取消编辑</Button>}
+          </div>
         </section>
       )}
       <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
@@ -1827,10 +1900,8 @@ function WorkflowWorkspace({
               key={item.id}
               className="flex items-center gap-3 border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
             >
-              <strong>{item.name}</strong>
-              <span className="text-xs text-zinc-500">
-                {item.enabled ? "已启用" : "已停用"}
-              </span>
+              <div className="min-w-0 flex-1"><strong>{item.name}</strong><span className="ml-2 text-xs text-zinc-500">{item.enabled ? "已启用" : "已停用"}</span><span className="ml-2 block truncate text-xs text-zinc-400">{item.path}</span></div>
+              {user && <><Button variant="ghost" aria-label={`编辑 ${item.name}`} onPress={() => edit(item)}><Pencil /></Button>{item.id > 0 && <Button variant="ghost" aria-label={`删除 ${item.name}`} onPress={() => void remove(item)}><Trash2 /></Button>}</>}
             </div>
           ))
         ) : (

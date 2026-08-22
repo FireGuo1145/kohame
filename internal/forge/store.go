@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"gopkg.in/yaml.v3"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -55,6 +56,71 @@ type Workflow struct {
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
+
+type WorkflowDefinition struct {
+	Name  string
+	On    []string
+	Jobs  map[string]WorkflowJob
+	Steps []WorkflowStep
+}
+type WorkflowJob struct {
+	RunsOn string         `yaml:"runs-on"`
+	Steps  []WorkflowStep `yaml:"steps"`
+}
+type WorkflowStep struct {
+	Name string `yaml:"name,omitempty"`
+	Run  string `yaml:"run"`
+}
+
+// ParseWorkflowDefinition accepts GitHub Actions YAML and the legacy compact JSON shape.
+func ParseWorkflowDefinition(content string) (WorkflowDefinition, error) {
+	var raw struct {
+		Name  string                 `yaml:"name"`
+		On    yaml.Node              `yaml:"on"`
+		Jobs  map[string]WorkflowJob `yaml:"jobs"`
+		Steps []WorkflowStep         `yaml:"steps"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &raw); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	events := []string{}
+	collect := func(node *yaml.Node) {
+		if node == nil {
+			return
+		}
+		switch node.Kind {
+		case yaml.SequenceNode:
+			for _, item := range node.Content {
+				if strings.TrimSpace(item.Value) != "" {
+					events = append(events, strings.TrimSpace(item.Value))
+				}
+			}
+		case yaml.MappingNode:
+			for index := 0; index+1 < len(node.Content); index += 2 {
+				if strings.TrimSpace(node.Content[index].Value) != "" {
+					events = append(events, strings.TrimSpace(node.Content[index].Value))
+				}
+			}
+		case yaml.ScalarNode:
+			if strings.TrimSpace(node.Value) != "" {
+				events = append(events, strings.TrimSpace(node.Value))
+			}
+		}
+	}
+	collect(&raw.On)
+	if len(events) == 0 && raw.On.Kind == 0 {
+		return WorkflowDefinition{}, errors.New("workflow config must include on and jobs")
+	}
+	steps := append([]WorkflowStep{}, raw.Steps...)
+	for _, job := range raw.Jobs {
+		steps = append(steps, job.Steps...)
+	}
+	if len(events) == 0 || len(steps) == 0 {
+		return WorkflowDefinition{}, errors.New("workflow config must include on and jobs with steps")
+	}
+	return WorkflowDefinition{Name: strings.TrimSpace(raw.Name), On: events, Jobs: raw.Jobs, Steps: steps}, nil
+}
+
 type WorkflowRun struct {
 	ID             int64      `json:"id"`
 	WorkflowID     int64      `json:"workflowId"`
@@ -70,6 +136,7 @@ type SiteSettings struct {
 	Description       string `json:"description"`
 	AllowRegistration bool   `json:"allowRegistration"`
 	RepositoryRoot    string `json:"repositoryRoot"`
+	WorkflowDirectory string `json:"workflowDirectory"`
 	CaptchaEnabled    bool   `json:"captchaEnabled"`
 	CaptchaSiteKey    string `json:"captchaSiteKey"`
 	CaptchaSecret     string `json:"captchaSecret,omitempty"`
@@ -668,6 +735,8 @@ func (s *Store) Settings(ctx context.Context) (SiteSettings, error) {
 			settings.AllowRegistration = value == "true"
 		case "repository_root":
 			settings.RepositoryRoot = value
+		case "workflow_directory":
+			settings.WorkflowDirectory = value
 		case "captcha_enabled":
 			settings.CaptchaEnabled = value == "true"
 		case "captcha_site_key":
@@ -694,7 +763,15 @@ func (s *Store) UpdateSettings(ctx context.Context, value SiteSettings) error {
 	if strings.TrimSpace(value.Title) == "" {
 		return fmt.Errorf("site title is required")
 	}
-	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom), "gravatar_mirror": strings.TrimSpace(value.GravatarMirror)}
+	workflowDirectory := strings.TrimSpace(value.WorkflowDirectory)
+	if workflowDirectory == "" {
+		workflowDirectory = "/.kohame/workflow"
+	}
+	workflowDirectory = strings.Trim(workflowDirectory, "/")
+	if workflowDirectory == "" || workflowDirectory == "." || strings.Contains(workflowDirectory, "..") || strings.ContainsAny(workflowDirectory, `\\`) {
+		return fmt.Errorf("workflow directory must be a repository-relative path")
+	}
+	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "workflow_directory": "/" + workflowDirectory, "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom), "gravatar_mirror": strings.TrimSpace(value.GravatarMirror)}
 	for key, item := range items {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO settings (key,value) VALUES (`+s.args(1, 2)+`) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, item); err != nil {
 			return err

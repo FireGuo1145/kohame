@@ -2111,7 +2111,7 @@ func (s *Server) workflows(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	items, err := s.repos.ListWorkflows(r.Context(), repoKey(r))
+	items, err := s.loadWorkflows(r.Context(), repoKey(r))
 	if err != nil {
 		writeError(w, 500, "Could not load workflows.")
 		return
@@ -2146,6 +2146,34 @@ func (s *Server) saveWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
+	settings, settingsErr := s.forge.Settings(r.Context())
+	if settingsErr != nil {
+		writeError(w, 500, "Could not load workflow directory.")
+		return
+	}
+	repo, repoErr := s.repos.GetFullName(repoKey(r))
+	if repoErr != nil {
+		writeError(w, 404, "Repository not found.")
+		return
+	}
+	repoSettings, repoSettingsErr := s.repos.Settings(r.Context(), repoKey(r))
+	if repoSettingsErr != nil {
+		writeError(w, 500, "Could not load repository settings.")
+		return
+	}
+	path := input.Path
+	if path == "" {
+		path = workflowDirectory(settings.WorkflowDirectory) + "/" + workflowFileName(saved.Name)
+	}
+	if !workflowPathAllowed(path, workflowDirectory(settings.WorkflowDirectory)) {
+		writeError(w, 400, "Workflow path must stay inside the site workflow directory.")
+		return
+	}
+	if _, writeErr := s.repos.WriteFile(r.Context(), repo, valueOr(repoSettings.DefaultBranch, "main"), path, saved.Config, user.Username, user.Email, "更新工作流 "+saved.Name); writeErr != nil {
+		writeError(w, 400, "Could not write workflow file: "+writeErr.Error())
+		return
+	}
+	saved.Path = path
 	writeJSON(w, 200, saved)
 }
 func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -2165,6 +2193,15 @@ func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "Invalid workflow ID.")
 		return
 	}
+	var deleted repository.Workflow
+	if items, listErr := s.repos.ListWorkflows(r.Context(), repoKey(r)); listErr == nil {
+		for _, item := range items {
+			if item.ID == id {
+				deleted = item
+				break
+			}
+		}
+	}
 	if err := s.repos.DeleteWorkflow(r.Context(), repoKey(r), id); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			writeError(w, 404, "Workflow not found.")
@@ -2172,6 +2209,20 @@ func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "Could not delete workflow.")
 		}
 		return
+	}
+	// Database records are authoritative for the API; remove the corresponding file when present.
+	if deleted.ID > 0 {
+		if settings, settingsErr := s.forge.Settings(r.Context()); settingsErr == nil {
+			if repo, repoErr := s.repos.GetFullName(repoKey(r)); repoErr == nil {
+				if repoSettings, repoSettingsErr := s.repos.Settings(r.Context(), repoKey(r)); repoSettingsErr == nil {
+					filePath := deleted.Path
+					if filePath == "" {
+						filePath = workflowDirectory(settings.WorkflowDirectory) + "/" + workflowFileName(deleted.Name)
+					}
+					_ = s.repos.DeleteFile(r.Context(), repo, valueOr(repoSettings.DefaultBranch, "main"), filePath, user.Username, user.Email, "删除工作流 "+deleted.Name)
+				}
+			}
+		}
 	}
 	w.WriteHeader(204)
 }
@@ -2215,7 +2266,7 @@ func (s *Server) runWorkflows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, runs)
 }
 func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) ([]repository.WorkflowRun, error) {
-	items, err := s.repos.ListWorkflows(ctx, repoName)
+	items, err := s.loadWorkflows(ctx, repoName)
 	if err != nil {
 		return nil, err
 	}
@@ -2224,13 +2275,8 @@ func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) (
 		if !workflow.Enabled {
 			continue
 		}
-		var config struct {
-			On    []string `json:"on"`
-			Steps []struct {
-				Run string `json:"run"`
-			} `json:"steps"`
-		}
-		if err := json.Unmarshal([]byte(workflow.Config), &config); err != nil {
+		config, parseErr := forge.ParseWorkflowDefinition(workflow.Config)
+		if parseErr != nil {
 			continue
 		}
 		matches := false
@@ -2295,10 +2341,115 @@ func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) (
 	return runs, nil
 }
 
+func (s *Server) loadWorkflows(ctx context.Context, repoName string) ([]repository.Workflow, error) {
+	items, err := s.repos.ListWorkflows(ctx, repoName)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := s.forge.Settings(ctx)
+	if err != nil {
+		return items, nil
+	}
+	directory := workflowDirectory(settings.WorkflowDirectory)
+	for index := range items {
+		if items[index].Path == "" {
+			items[index].Path = directory + "/" + workflowFileName(items[index].Name)
+		}
+	}
+	repo, err := s.repos.GetFullName(repoName)
+	if err != nil {
+		return items, nil
+	}
+	files, err := s.repos.FileTree(ctx, repo, "HEAD")
+	if err != nil {
+		return items, nil
+	}
+	byPath := make(map[string]int, len(items))
+	for index, item := range items {
+		byPath[item.Path] = index
+	}
+	for _, file := range files {
+		if !workflowPathAllowed(file.Path, directory) {
+			continue
+		}
+		blob, blobErr := s.repos.Blob(ctx, repo, "HEAD", file.Path)
+		if blobErr != nil || !blob.IsText {
+			continue
+		}
+		definition, parseErr := forge.ParseWorkflowDefinition(blob.Content)
+		if parseErr != nil {
+			continue
+		}
+		if index, ok := byPath[file.Path]; ok {
+			items[index].Config = blob.Content
+			items[index].Events = definition.On
+			items[index].Steps = workflowSteps(definition.Steps)
+			if definition.Name != "" {
+				items[index].Name = definition.Name
+			}
+			continue
+		}
+		name := definition.Name
+		if name == "" {
+			name = strings.TrimSuffix(path.Base(file.Path), path.Ext(file.Path))
+		}
+		items = append(items, repository.Workflow{RepositoryName: repoName, Name: name, Config: blob.Content, Enabled: true, Path: file.Path, Events: definition.On, Steps: workflowSteps(definition.Steps)})
+		byPath[file.Path] = len(items) - 1
+	}
+	return items, nil
+}
+
+func workflowSteps(steps []forge.WorkflowStep) []repository.WorkflowStep {
+	items := make([]repository.WorkflowStep, 0, len(steps))
+	for _, step := range steps {
+		items = append(items, repository.WorkflowStep{Name: step.Name, Run: step.Run})
+	}
+	return items
+}
+
 func (s *Server) queueWorkflowEvent(repoName, event string) {
 	go func() {
 		_, _ = s.executeWorkflows(context.Background(), repoName, event)
 	}()
+}
+
+func workflowDirectory(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if value == "" {
+		value = "/.kohame/workflow"
+	}
+	value = strings.Trim(value, "/")
+	if value == "" || strings.Contains(value, "..") {
+		return ".kohame/workflow"
+	}
+	return value
+}
+
+func workflowFileName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if b.Len() > 0 {
+			b.WriteByte('-')
+		}
+	}
+	base := strings.Trim(b.String(), "-")
+	if base == "" {
+		base = "workflow"
+	}
+	return base + ".yml"
+}
+
+func workflowPathAllowed(value, directory string) bool {
+	value = path.Clean(strings.TrimPrefix(strings.ReplaceAll(value, "\\", "/"), "/"))
+	directory = path.Clean(strings.TrimPrefix(directory, "/"))
+	if value == "." || directory == "." || strings.Contains(value, "..") || !strings.HasPrefix(value, directory+"/") {
+		return false
+	}
+	ext := strings.ToLower(path.Ext(value))
+	return ext == ".yml" || ext == ".yaml"
 }
 
 func (s *Server) updateRepositoryVisibility(w http.ResponseWriter, r *http.Request) {

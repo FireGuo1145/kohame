@@ -270,6 +270,17 @@ export default function SiteSettingsPage({
               }
               placeholder="data/repos"
             />
+            <Field
+              label="工作流目录"
+              value={value.workflowDirectory}
+              onChange={(workflowDirectory) =>
+                setValue({ ...value, workflowDirectory })
+              }
+              placeholder="/.kohame/workflow"
+            />
+            <p className="text-sm text-zinc-500">
+              所有仓库统一使用此仓库相对目录，遵循 GitHub Actions 的 YAML 工作流格式。
+            </p>
             <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
               变更前请先迁移数据并做好备份，再重启服务使配置生效。
             </p>

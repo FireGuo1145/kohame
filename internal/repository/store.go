@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"kohame/internal/forge"
 )
 
 var ErrInvalidName = errors.New("scope and repository name must use lowercase letters, numbers, dots, hyphens, or underscores")
@@ -58,13 +59,20 @@ type WikiRevision struct {
 	EditedAt time.Time `json:"editedAt"`
 }
 type Workflow struct {
-	ID             int64     `json:"id"`
-	RepositoryName string    `json:"repositoryName"`
-	Name           string    `json:"name"`
-	Config         string    `json:"config"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID             int64          `json:"id"`
+	RepositoryName string         `json:"repositoryName"`
+	Name           string         `json:"name"`
+	Config         string         `json:"config"`
+	Enabled        bool           `json:"enabled"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+	Path           string         `json:"path,omitempty"`
+	Events         []string       `json:"events,omitempty"`
+	Steps          []WorkflowStep `json:"steps,omitempty"`
+}
+type WorkflowStep struct {
+	Name string `json:"name,omitempty"`
+	Run  string `json:"run"`
 }
 type WorkflowRun struct {
 	ID             int64      `json:"id"`
@@ -681,6 +689,12 @@ func (s *Store) ListWorkflows(ctx context.Context, fullName string) ([]Workflow,
 		if err := rows.Scan(&item.ID, &item.RepositoryName, &item.Name, &item.Config, &item.Enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
+		if parsed, parseErr := forge.ParseWorkflowDefinition(item.Config); parseErr == nil {
+			item.Events = parsed.On
+			for _, step := range parsed.Steps {
+				item.Steps = append(item.Steps, WorkflowStep{Name: step.Name, Run: step.Run})
+			}
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -691,14 +705,9 @@ func (s *Store) SaveWorkflow(ctx context.Context, fullName string, item Workflow
 	if item.Name == "" || len(item.Name) > 120 || item.Config == "" {
 		return Workflow{}, errors.New("workflow name and config are required")
 	}
-	var parsed struct {
-		On    []string `json:"on"`
-		Steps []struct {
-			Run string `json:"run"`
-		} `json:"steps"`
-	}
-	if err := json.Unmarshal([]byte(item.Config), &parsed); err != nil || len(parsed.On) == 0 || len(parsed.Steps) == 0 {
-		return Workflow{}, errors.New("workflow config must include on and steps")
+	parsed, err := forge.ParseWorkflowDefinition(item.Config)
+	if err != nil {
+		return Workflow{}, err
 	}
 	for _, event := range parsed.On {
 		if event != "push" && event != "issues" && event != "pull_request" && event != "release" && event != "workflow_dispatch" {
@@ -737,6 +746,11 @@ func (s *Store) SaveWorkflow(ctx context.Context, fullName string, item Workflow
 	}
 	item.RepositoryName = fullName
 	item.UpdatedAt = now
+	item.Events = parsed.On
+	item.Steps = make([]WorkflowStep, 0, len(parsed.Steps))
+	for _, step := range parsed.Steps {
+		item.Steps = append(item.Steps, WorkflowStep{Name: step.Name, Run: step.Run})
+	}
 	return item, nil
 }
 func (s *Store) DeleteWorkflow(ctx context.Context, fullName string, id int64) error {
@@ -1040,6 +1054,42 @@ func (s *Store) WriteFile(ctx context.Context, repo Repository, branch, filePath
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE repositories SET updated_at=`+s.placeholders(1)+` WHERE name=`+s.placeholders(2), time.Now().UTC(), repo.FullName)
 	return items[0], nil
+}
+
+func (s *Store) DeleteFile(ctx context.Context, repo Repository, branch, filePath, author, email, message string) error {
+	if !safeRef(branch) || !safeGitPath(filePath) || filePath == "" {
+		return ErrNotFound
+	}
+	work, err := os.MkdirTemp("", "kohame-delete-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+	if output, err := exec.CommandContext(ctx, "git", "clone", repo.Path, work).CombinedOutput(); err != nil {
+		return fmt.Errorf("clone repository: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if _, err := exec.CommandContext(ctx, "git", "-C", work, "checkout", "-B", branch).CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout branch: %w", err)
+	}
+	fullPath := filepath.Join(work, filepath.FromSlash(filePath))
+	if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(work)+string(os.PathSeparator)) {
+		return ErrNotFound
+	}
+	if err := os.Remove(fullPath); err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	for _, args := range [][]string{{"config", "user.name", author}, {"config", "user.email", email}, {"add", "-u", "--", filePath}, {"commit", "-m", valueOrMessage(message, "删除 "+filePath)}} {
+		if output, err := exec.CommandContext(ctx, "git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
+			return fmt.Errorf("delete file: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, err := exec.CommandContext(ctx, "git", "-C", work, "push", "origin", "HEAD:refs/heads/"+branch).CombinedOutput(); err != nil {
+		return fmt.Errorf("push file deletion: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func (s *Store) PullRequestDiff(ctx context.Context, repo Repository, source, target string) ([]CommitFile, error) {

@@ -64,7 +64,7 @@ Vite proxies `/api` and `/git` to `http://localhost:3000`, so the frontend behav
 - Work dashboard plus user and organization home pages.
 - Email verification with one-time, 24-hour links. Configure SMTP under **Site settings → SMTP 邮件服务** (host, port, username, password, and From address); STARTTLS is negotiated when the mail server advertises it.
 - Repository creation plus Git smart HTTP with browser session or HTTP Basic authentication.
-- Repository workflows with JSON event triggers (`push`, `issues`, `pull_request`, `release`, and `workflow_dispatch`) and run history.
+- Repository workflows using GitHub Actions-compatible YAML in the administrator-defined directory (default `/.kohame/workflow`), with `push`, `issues`, `pull_request`, `release`, and `workflow_dispatch` triggers and run history.
 - Repository-scoped issues, pull requests, releases, and activity-based contributor summaries.
 
 This is a compact forge, not a full Gitea replacement yet: pull requests provide file diffs, comments, and server-side merge commits, while workflows provide lightweight repository automation rather than a full CI runner. Use HTTPS when serving it beyond a trusted local network.

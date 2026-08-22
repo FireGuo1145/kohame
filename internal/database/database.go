@@ -122,7 +122,7 @@ func Open(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
-	for key, value := range map[string]string{"repository_root": "data/repos", "captcha_enabled": "false", "captcha_site_key": "", "captcha_secret": "", "gravatar_mirror": "https://www.gravatar.com/avatar/"} {
+	for key, value := range map[string]string{"repository_root": "data/repos", "workflow_directory": "/.kohame/workflow", "captcha_enabled": "false", "captcha_site_key": "", "captcha_secret": "", "gravatar_mirror": "https://www.gravatar.com/avatar/"} {
 		seed := `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING`
 		if cfg.Driver == "pgsql" {
 			seed = `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`
