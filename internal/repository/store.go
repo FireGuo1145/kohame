@@ -266,6 +266,18 @@ func normalizeLicense(value string) (string, string) {
 		return "GPL-3.0", "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License.\n"
 	case "BSD-3-CLAUSE", "BSD 3-CLAUSE":
 		return "BSD-3-Clause", "BSD 3-Clause License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met.\n"
+	case "BSD-2-CLAUSE", "BSD 2-CLAUSE":
+		return "BSD-2-Clause", "BSD 2-Clause License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.\n"
+	case "ISC":
+		return "ISC", "ISC License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\n\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.\n"
+	case "0BSD", "ZERO-BSD":
+		return "0BSD", "0BSD License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\n\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.\n"
+	case "ZLIB", "ZLIB-LICENSE":
+		return "Zlib", "zlib License\n\nCopyright (c) " + fmt.Sprint(time.Now().Year()) + "\n\nThis software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.\n\nPermission is granted to anyone to use this software for any purpose, including commercial applications, and to alter it and redistribute it freely, subject to the following restrictions:\n\n1. The origin of this software must not be misrepresented; you must not claim that you wrote the original software.\n2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.\n3. This notice may not be removed or altered from any source distribution.\n"
+	case "UNLICENSE":
+		return "Unlicense", "This is free and unencumbered software released into the public domain.\n\nAnyone is free to copy, modify, publish, use, compile, sell, or distribute this software, either in source code form or as a compiled binary, for any purpose, commercial or non-commercial, and by any means.\n\nIn jurisdictions that recognize copyright laws, the author dedicates any and all copyright interest in the software to the public domain. We make this dedication for the benefit of the public at large and to the detriment of our heirs and successors.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.\n\nFor more information, please refer to <https://unlicense.org>\n"
+	case "CC0-1.0", "CC0":
+		return "CC0-1.0", "CC0 1.0 Universal\n\nThe person who associated a work with this deed has dedicated the work to the public domain by waiving all of his or her rights to the work worldwide under copyright law, including all related and neighboring rights, to the extent allowed by law.\n\nYou can copy, modify, distribute and perform the work, even for commercial purposes, all without asking permission.\n\nFor the full legal code, see <https://creativecommons.org/publicdomain/zero/1.0/legalcode>.\n"
 	default:
 		return "invalid", ""
 	}
@@ -285,8 +297,20 @@ func (s *Store) DetectLicense(ctx context.Context, repo Repository, ref string) 
 			return "Apache-2.0"
 		case strings.Contains(value, "gnu general public license") && strings.Contains(value, "version 3"):
 			return "GPL-3.0"
+		case strings.Contains(value, "bsd 2-clause license"):
+			return "BSD-2-Clause"
 		case strings.Contains(value, "bsd 3-clause license") || strings.Contains(value, "redistribution and use in source and binary forms"):
 			return "BSD-3-Clause"
+		case strings.Contains(value, "isc license"):
+			return "ISC"
+		case strings.Contains(value, "0bsd license"):
+			return "0BSD"
+		case strings.Contains(value, "zlib license"):
+			return "Zlib"
+		case strings.Contains(value, "free and unencumbered software released into the public domain"):
+			return "Unlicense"
+		case strings.Contains(value, "cc0 1.0 universal"):
+			return "CC0-1.0"
 		}
 	}
 	return ""
