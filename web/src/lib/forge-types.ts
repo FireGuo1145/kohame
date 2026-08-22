@@ -24,6 +24,8 @@ export type RepositorySettings = {
 }
 export type Collaborator = { username: string; permission: "read" | "write" | "maintain" | "admin" }
 export type ProtectedBranch = { branch: string; requirePullRequest: boolean; requireApprovals: number }
+export type WikiPage = { slug: string; title: string; content?: string; author: string; createdAt: string; updatedAt: string }
+
 export type CaptchaConfig = { enabled: boolean; siteKey: string }
 export type Label = { id: number; name: string; color: string; description: string }
 export type Issue = { id: number; title: string; body: string; state: string; author: string; createdAt: string; labels: Label[] }

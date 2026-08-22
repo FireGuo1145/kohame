@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Check, ChevronDown, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Plus, Search, Settings, ShieldCheck, Star, Tag, Trash2, Upload, UserPlus, Users, X } from "lucide-react"
+import { ArrowLeft, Check, ChevronDown, BookOpen, CircleDot, Code2, Copy, FileCode2, FolderGit2, GitBranch, GitCompareArrows, GitCommitHorizontal, GitPullRequest, ListFilter, MessageSquare, Pencil, Plus, Search, Settings, ShieldCheck, Star, Tag, Trash2, Upload, UserPlus, Users, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, Badge, Empty, Field, Loading, PageMessage } from "@/components/forge-ui"
 import { api, when } from "@/lib/forge-api"
-import type { Blob, Collaborator, Commit, CommitDetail, CommitFile, Contributor, GitRef, Issue, IssueComment, Label, Language, ProtectedBranch, PullRequest, PullRequestComment, Release, Repository, RepositorySettings, SSHInfo, TreeEntry, User } from "@/lib/forge-types"
+import type { Blob, Collaborator, Commit, CommitDetail, CommitFile, Contributor, GitRef, Issue, IssueComment, Label, Language, ProtectedBranch, PullRequest, PullRequestComment, Release, Repository, RepositorySettings, SSHInfo, TreeEntry, User, WikiPage } from "@/lib/forge-types"
 
 function RepositoryView({
   name,
@@ -33,8 +33,9 @@ function RepositoryView({
   const treeMatch = subpath.match(/^tree\/([^/]+)(?:\/(.*))?$/)
   const treeRef = treeMatch ? decodeURIComponent(treeMatch[1]) : "HEAD"
   const treeDirectory = treeMatch?.[2] ? decodeURIComponent(treeMatch[2]) : ""
+  const wikiSlug = subpath.startsWith("wiki/") ? decodeURIComponent(subpath.slice("wiki/".length)) : ""
   const [repositoryScope, repositoryName] = name.split("/", 2)
-  const tab = subpath === "new" ? "file-new" : subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : commitMatch ? "commit-detail" : releaseMatch ? "release-detail" : pullMatch ? "pull-detail" : treeMatch ? "code" : filePath ? "file" : subpath || "code"
+  const tab = subpath === "new" ? "file-new" : subpath === "issues/new" ? "issue-new" : issueMatch ? "issue-detail" : commitMatch ? "commit-detail" : releaseMatch ? "release-detail" : pullMatch ? "pull-detail" : subpath === "wiki" || subpath.startsWith("wiki/") ? "wiki" : treeMatch ? "code" : filePath ? "file" : subpath || "code"
   const [issues, setIssues] = useState<Issue[]>([])
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [releases, setReleases] = useState<Release[]>([])
@@ -118,6 +119,7 @@ function RepositoryView({
   }
   const tabs = [
     ["code", "代码", <Code2 />],
+    ["wiki", "Wiki", <BookOpen />],
     ["commits", "提交记录", <GitCommitHorizontal />],
     ["issues", "议题", <CircleDot />],
     ["pulls", "拉取请求", <GitPullRequest />],
@@ -125,7 +127,7 @@ function RepositoryView({
     ["tags", "标签", <Tag />],
     ["releases", "发布版本", <Tag />],
     ["settings", "设置", <Settings />],
-  ].filter(([value]) => value === "issues" ? repositorySettings?.issuesEnabled !== false : value === "pulls" ? repositorySettings?.pullsEnabled !== false : value === "releases" ? repositorySettings?.releasesEnabled !== false : true) as [string, string, ReactNode][]
+  ].filter(([value]) => value === "issues" ? repositorySettings?.issuesEnabled !== false : value === "pulls" ? repositorySettings?.pullsEnabled !== false : value === "releases" ? repositorySettings?.releasesEnabled !== false : value === "wiki" ? repositorySettings?.wikiEnabled === true : true) as [string, string, ReactNode][]
   const openTab = (value: string) => navigate(value === "code" ? `/${name}` : `/${name}/${value}`)
   return (
     <div className="mx-auto max-w-7xl px-5 py-7">
@@ -175,6 +177,7 @@ function RepositoryView({
         {tab === "code" && <CodeBrowser name={name} user={user} initialRef={treeRef} initialDirectory={treeDirectory} onBrowse={(ref, directory) => navigate(`/${name}/tree/${encodeURIComponent(ref)}${directory ? `/${directory.split("/").map(encodeURIComponent).join("/")}` : ""}`)} onCreate={() => navigate(`/${name}/new`)} onOpenFile={(path, ref) => navigate(`/${name}/blob/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`)} />}
         {tab === "file" && <FilePreview name={name} path={filePath} refName={fileRef} user={user} onBack={() => navigate(`/${name}`)} />}
         {tab === "file-new" && <FilePreview name={name} path="" refName={fileRef} user={user} onBack={() => navigate(`/${name}`)} />}
+        {tab === "wiki" && <WikiWorkspace name={name} user={user} slug={wikiSlug} onNavigate={(nextSlug) => navigate(nextSlug ? `/${name}/wiki/${encodeURIComponent(nextSlug)}` : `/${name}/wiki`)} />}
         {tab === "commits" && <RepositoryList name={name} kind="commits" onOpenCommit={(hash) => navigate(`/${name}/commits/${hash}`)} />}
         {tab === "commit-detail" && <CommitDetailPage name={name} hash={commitHash} onBack={() => navigate(`/${name}/commits`)} />}
         {tab === "branches" && <RepositoryList name={name} kind="branches" />}
@@ -391,6 +394,89 @@ function FileTreeSidebar({ name, refName, currentPath, onOpen }: { name: string;
   return <aside className="min-w-0 rounded-lg border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"><div className="mb-3 flex items-center gap-2"><GitBranch className="size-4 text-zinc-500" /><strong className="text-sm">{refName}</strong></div><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="查找文件" className="mb-3 h-9 w-full rounded-md border border-zinc-300 bg-transparent px-2 text-sm dark:border-zinc-700" /><div className="max-h-[calc(100svh-17rem)] overflow-auto">{visible.map((item) => <button key={item.path} onClick={() => onOpen(item.path)} className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${item.path === currentPath ? "bg-emerald-50 font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"}`} style={{ paddingLeft: `${8 + (item.path.split("/").length - 1) * 12}px` }}><FileCode2 className="size-3.5 shrink-0 text-zinc-500" /><span className="truncate">{item.name}</span></button>)}</div></aside>
 }
 
+function WikiWorkspace({ name, user, slug, onNavigate }: { name: string; user: User | null; slug: string; onNavigate: (slug: string) => void }) {
+  const [pages, setPages] = useState<WikiPage[]>([])
+  const [page, setPage] = useState<WikiPage | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({ slug: "", title: "", content: "" })
+  const [preview, setPreview] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState("")
+
+  const loadPages = async () => {
+    const values = await api<WikiPage[]>(`/api/repos/${name}/wiki`)
+    setPages(values)
+  }
+  useEffect(() => {
+    void loadPages().catch((cause: unknown) => setMessage(cause instanceof Error ? cause.message : "无法加载 Wiki 页面。"))
+  }, [name])
+  useEffect(() => {
+    if (!slug) {
+      setPage(null)
+      return
+    }
+    void api<WikiPage>(`/api/repos/${name}/wiki/${encodeURIComponent(slug)}`)
+      .then((value) => { setPage(value); setMessage("") })
+      .catch((cause: unknown) => { setPage(null); setMessage(cause instanceof Error ? cause.message : "无法加载 Wiki 页面。") })
+  }, [name, slug])
+
+  const startNew = () => {
+    setDraft({ slug: "", title: "", content: "" })
+    setPreview(false)
+    setEditing(true)
+    setMessage("")
+  }
+  const startEdit = () => {
+    if (!page) return
+    setDraft({ slug: page.slug, title: page.title, content: page.content || "" })
+    setPreview(false)
+    setEditing(true)
+    setMessage("")
+  }
+  const save = async () => {
+    const targetSlug = editing && page ? page.slug : draft.slug.trim().toLowerCase()
+    if (!targetSlug || !draft.title.trim()) {
+      setMessage("请填写页面标识和标题。")
+      return
+    }
+    setSaving(true)
+    try {
+      const saved = await api<WikiPage>(`/api/repos/${name}/wiki/${encodeURIComponent(targetSlug)}`, { method: "PUT", body: JSON.stringify({ title: draft.title, content: draft.content }) })
+      await loadPages()
+      setEditing(false)
+      setPage(saved)
+      onNavigate(saved.slug)
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "无法保存 Wiki 页面。")
+    } finally {
+      setSaving(false)
+    }
+  }
+  const remove = async () => {
+    if (!page || !window.confirm(`确定删除 Wiki 页面“${page.title}”吗？`)) return
+    try {
+      await api<void>(`/api/repos/${name}/wiki/${encodeURIComponent(page.slug)}`, { method: "DELETE" })
+      await loadPages()
+      setPage(null)
+      onNavigate("")
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "无法删除 Wiki 页面。")
+    }
+  }
+
+  if (message && !editing && !page && pages.length === 0) return <PageMessage title="Wiki" message={message} />
+  return <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
+    <aside className="h-fit rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="mb-3 flex items-center justify-between gap-2"><h2 className="font-semibold">Wiki 页面</h2>{user && <Button size="xs" variant="outline" onPress={startNew}><Plus />新建</Button>}</div>
+      <div className="space-y-1">{pages.length ? pages.map((item) => <button key={item.slug} onClick={() => { setEditing(false); onNavigate(item.slug) }} className={`block w-full rounded-md px-3 py-2 text-left text-sm ${slug === item.slug ? "bg-emerald-50 font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}><span className="block truncate">{item.title}</span><span className="mt-0.5 block truncate text-xs font-normal text-zinc-500">{item.slug}</span></button>) : <p className="px-3 py-5 text-sm text-zinc-500">暂无页面。</p>}</div>
+    </aside>
+    <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      {message && <p className="m-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/40">{message}</p>}
+      {editing ? <div className="p-5"><div className="mb-5 flex items-center justify-between gap-3"><h1 className="text-xl font-semibold">{page ? "编辑 Wiki 页面" : "新建 Wiki 页面"}</h1><div className="flex gap-2"><Button size="sm" variant="outline" onPress={() => { setEditing(false); setMessage("") }}>取消</Button><Button size="sm" isDisabled={saving} onPress={save}>{saving ? "保存中..." : "保存"}</Button></div></div><div className="space-y-4"><label className="block text-sm font-medium">页面标识{!page && <input value={draft.slug} onChange={(event) => setDraft({ ...draft, slug: event.target.value })} placeholder="例如 getting-started" className="mt-1.5 h-10 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm font-normal dark:border-zinc-700" />}</label><label className="block text-sm font-medium">标题<input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="页面标题" className="mt-1.5 h-10 w-full rounded-lg border border-zinc-300 bg-transparent px-3 text-sm font-normal dark:border-zinc-700" /></label><div className="flex items-center justify-between"><span className="text-sm font-medium">Markdown 内容</span><label className="flex items-center gap-2 text-sm text-zinc-500"><input type="checkbox" checked={preview} onChange={(event) => setPreview(event.target.checked)} />预览</label></div>{preview ? <div className="min-h-64 rounded-lg border border-zinc-200 dark:border-zinc-800"><MarkdownPreview value={draft.content} /></div> : <textarea value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="使用 Markdown 编写项目文档…" className="min-h-80 w-full resize-y rounded-lg border border-zinc-300 bg-transparent p-3 font-mono text-sm leading-6 dark:border-zinc-700" />}</div></div> : page ? <><header className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-100 px-6 py-5 dark:border-zinc-800"><div><h1 className="text-2xl font-semibold">{page.title}</h1><p className="mt-1 text-sm text-zinc-500">由 {page.author} 更新于 {when(page.updatedAt)}</p></div>{user && <div className="flex gap-2"><Button size="sm" variant="outline" onPress={startEdit}><Pencil />编辑</Button><Button size="sm" variant="destructive" onPress={remove}><Trash2 />删除</Button></div>}</header><MarkdownPreview value={page.content || ""} /></> : <Empty icon={<BookOpen />} title="开始编写项目 Wiki" text="创建团队共享的安装说明、开发规范或项目知识库。" />}
+    </section>
+  </div>
+}
+
 function MarkdownPreview({ value }: { value: string }) {
   const lines = value.split("\n")
   return <article className="prose prose-zinc max-w-none p-6 dark:prose-invert">{lines.map((line, index) => line.startsWith("### ") ? <h3 key={index}>{line.slice(4)}</h3> : line.startsWith("## ") ? <h2 key={index}>{line.slice(3)}</h2> : line.startsWith("# ") ? <h1 key={index}>{line.slice(2)}</h1> : line.startsWith("> ") ? <blockquote key={index}>{line.slice(2)}</blockquote> : line.startsWith("- ") ? <li key={index}>{line.slice(2)}</li> : line ? <p key={index}>{line}</p> : <br key={index} />)}</article>
@@ -520,7 +606,7 @@ function RepositorySettingsPanel({ name, user, onDeleted, onTransferred }: { nam
     <div className="min-w-0">
       {message && <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">{message}</p>}
       {section === "general" && <SettingsSection title="常规" description="管理项目展示信息和默认分支。"><form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void save() }}><Field label="仓库简介" value={value.description} onChange={(description) => setValue({ ...value, description })} placeholder="描述这个项目" /><Field label="项目主页" value={value.homepageUrl} onChange={(homepageUrl) => setValue({ ...value, homepageUrl })} placeholder="https://example.com" /><Field label="默认分支" value={value.defaultBranch} onChange={(defaultBranch) => setValue({ ...value, defaultBranch })} placeholder="main" /><Field label="Topics（逗号分隔）" value={topics} onChange={setTopics} placeholder="go, git, forge" /><div className="flex justify-end"><Button type="submit"><Settings />保存更改</Button></div></form></SettingsSection>}
-      {section === "features" && <SettingsSection title="仓库功能" description="按需开启工作流模块；关闭后保留历史数据。"><div className="divide-y divide-zinc-100 dark:divide-zinc-800"><SettingToggle label="议题" description="允许创建、讨论和管理议题。" checked={value.issuesEnabled} onChange={(checked) => setFeature("issuesEnabled", checked)} /><SettingToggle label="拉取请求" description="允许创建和审阅拉取请求。" checked={value.pullsEnabled} onChange={(checked) => setFeature("pullsEnabled", checked)} /><SettingToggle label="发布版本" description="允许发布标签说明和附加文件。" checked={value.releasesEnabled} onChange={(checked) => setFeature("releasesEnabled", checked)} /><SettingToggle label="允许派生" description="关闭后，其他用户无法从此仓库创建派生。" checked={value.allowForks} onChange={(checked) => setFeature("allowForks", checked)} /><SettingToggle label="Wiki" description="为仓库预留知识库功能。" checked={value.wikiEnabled} onChange={(checked) => setFeature("wikiEnabled", checked)} /></div></SettingsSection>}
+      {section === "features" && <SettingsSection title="仓库功能" description="按需开启工作流模块；关闭后保留历史数据。"><div className="divide-y divide-zinc-100 dark:divide-zinc-800"><SettingToggle label="议题" description="允许创建、讨论和管理议题。" checked={value.issuesEnabled} onChange={(checked) => setFeature("issuesEnabled", checked)} /><SettingToggle label="拉取请求" description="允许创建和审阅拉取请求。" checked={value.pullsEnabled} onChange={(checked) => setFeature("pullsEnabled", checked)} /><SettingToggle label="发布版本" description="允许发布标签说明和附加文件。" checked={value.releasesEnabled} onChange={(checked) => setFeature("releasesEnabled", checked)} /><SettingToggle label="Wiki" description="为项目维护可独立浏览与编辑的知识页面。" checked={value.wikiEnabled} onChange={(checked) => setFeature("wikiEnabled", checked)} /><SettingToggle label="允许派生" description="关闭后，其他用户无法从此仓库创建派生。" checked={value.allowForks} onChange={(checked) => setFeature("allowForks", checked)} /><SettingToggle label="Wiki" description="为仓库预留知识库功能。" checked={value.wikiEnabled} onChange={(checked) => setFeature("wikiEnabled", checked)} /></div></SettingsSection>}
       {section === "issues" && <SettingsSection title="议题" description="维护议题标签，并控制合并拉取请求时的自动关闭行为。"><div className="mb-5 rounded-lg border border-zinc-200 px-4 dark:border-zinc-700"><SettingToggle label="自动关闭关联议题" description="拉取请求合并后，自动关闭描述中引用的议题。" checked={value.autoCloseIssues} onChange={(checked) => setFeature("autoCloseIssues", checked)} /></div><form className="grid gap-2 rounded-lg border border-zinc-200 p-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] dark:border-zinc-700" onSubmit={async (event) => { event.preventDefault(); try { const item = await api<Label>(`/api/repos/${name}/labels`, { method: "POST", body: JSON.stringify(labelForm) }); setLabels([...labels, item]); setLabelForm({ name: "", color: "#0e8a16", description: "" }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法新建标签。") } }}><input required value={labelForm.name} onChange={(event) => setLabelForm({ ...labelForm, name: event.target.value })} placeholder="标签名称" className="h-9 min-w-0 rounded-md border border-zinc-300 bg-transparent px-2 text-sm dark:border-zinc-700" /><input value={labelForm.color} onChange={(event) => setLabelForm({ ...labelForm, color: event.target.value })} type="color" aria-label="标签颜色" className="size-9 rounded border border-zinc-300 p-1 dark:border-zinc-700" /><input value={labelForm.description} onChange={(event) => setLabelForm({ ...labelForm, description: event.target.value })} placeholder="说明（可选）" className="h-9 min-w-0 rounded-md border border-zinc-300 bg-transparent px-2 text-sm dark:border-zinc-700" /><Button size="sm" type="submit"><Plus />添加</Button></form><div className="mt-4 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">{labels.length ? labels.map((label) => <div key={label.id} className="flex items-center gap-3 px-4 py-3"><span className="h-3 w-3 rounded-full" style={{ backgroundColor: label.color }} /><div className="min-w-0 flex-1"><p className="font-medium text-sm">{label.name}</p><p className="truncate text-xs text-zinc-500">{label.description || "无说明"}</p></div><Button size="xs" variant="destructive" aria-label={`删除 ${label.name}`} onPress={async () => { try { await api<void>(`/api/repos/${name}/labels/${label.id}`, { method: "DELETE" }); setLabels(labels.filter((item) => item.id !== label.id)) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法删除标签。") } }}><Trash2 /></Button></div>) : <p className="px-4 py-7 text-sm text-zinc-500">还没有议题标签。</p>}</div></SettingsSection>}
       {section === "access" && <SettingsSection title="协作者" description="添加成员并分配只读、写入、维护或管理员权限。"><form className="flex flex-wrap gap-2" onSubmit={async (event) => { event.preventDefault(); try { await api<void>(`/api/repos/${name}/collaborators/${encodeURIComponent(collaborator.username)}`, { method: "PUT", body: JSON.stringify({ permission: collaborator.permission }) }); await load(); setCollaborator({ username: "", permission: "write" }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法添加协作者。") } }}><input required value={collaborator.username} onChange={(event) => setCollaborator({ ...collaborator, username: event.target.value })} placeholder="用户名" className="h-10 min-w-40 flex-1 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700" /><select value={collaborator.permission} onChange={(event) => setCollaborator({ ...collaborator, permission: event.target.value })} className="h-10 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700"><option value="read">只读</option><option value="write">写入</option><option value="maintain">维护</option><option value="admin">管理员</option></select><Button type="submit"><UserPlus />添加</Button></form><div className="mt-5 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">{collaborators.length ? collaborators.map((item) => <div key={item.username} className="flex items-center gap-3 px-4 py-3"><Avatar name={item.username} /><strong className="min-w-0 flex-1 truncate text-sm">{item.username}</strong><select value={item.permission} onChange={async (event) => { try { await api<void>(`/api/repos/${name}/collaborators/${encodeURIComponent(item.username)}`, { method: "PUT", body: JSON.stringify({ permission: event.target.value }) }); await load() } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法更新权限。") } }} className="h-8 rounded-md border border-zinc-300 bg-transparent px-2 text-xs dark:border-zinc-700"><option value="read">只读</option><option value="write">写入</option><option value="maintain">维护</option><option value="admin">管理员</option></select><Button size="xs" variant="outline" aria-label={`移除 ${item.username}`} onPress={async () => { await api<void>(`/api/repos/${name}/collaborators/${encodeURIComponent(item.username)}`, { method: "DELETE" }); await load() }}><X /></Button></div>) : <p className="px-4 py-7 text-sm text-zinc-500">尚未添加协作者。</p>}</div></SettingsSection>}
       {section === "branches" && <SettingsSection title="分支保护" description="限制关键分支的直接合并，并设置审批要求。"><form className="grid gap-3 rounded-lg border border-zinc-200 p-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] dark:border-zinc-700" onSubmit={async (event) => { event.preventDefault(); try { await api<ProtectedBranch>(`/api/repos/${name}/branch-protections/${encodeURIComponent(protection.branch)}`, { method: "PUT", body: JSON.stringify(protection) }); await load(); setProtection({ branch: "", requirePullRequest: true, requireApprovals: 1 }) } catch (cause) { setMessage(cause instanceof Error ? cause.message : "无法保护分支。") } }}><input required value={protection.branch} onChange={(event) => setProtection({ ...protection, branch: event.target.value })} placeholder="分支名称，例如 main" className="h-10 rounded-lg border border-zinc-300 bg-transparent px-3 text-sm dark:border-zinc-700" /><label className="flex items-center gap-2 text-sm"><input checked={protection.requirePullRequest} onChange={(event) => setProtection({ ...protection, requirePullRequest: event.target.checked })} type="checkbox" />需要拉取请求</label><label className="flex items-center gap-2 text-sm">审批 <input value={protection.requireApprovals} onChange={(event) => setProtection({ ...protection, requireApprovals: Number(event.target.value) })} type="number" min="0" max="10" className="h-8 w-14 rounded border border-zinc-300 bg-transparent px-2 dark:border-zinc-700" /></label><Button className="sm:col-span-3 sm:justify-self-end" type="submit"><ShieldCheck />保护分支</Button></form><div className="mt-5 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">{protections.length ? protections.map((item) => <div key={item.branch} className="flex items-center gap-3 px-4 py-3"><ShieldCheck className="size-4 text-emerald-600" /><strong className="min-w-0 flex-1 text-sm">{item.branch}</strong><span className="text-xs text-zinc-500">{item.requirePullRequest ? "需 PR" : "允许直推"} · {item.requireApprovals} 个审批</span><Button size="xs" variant="outline" aria-label={`移除 ${item.branch} 的保护`} onPress={async () => { await api<void>(`/api/repos/${name}/branch-protections/${encodeURIComponent(item.branch)}`, { method: "DELETE" }); await load() }}><X /></Button></div>) : <p className="px-4 py-7 text-sm text-zinc-500">暂无受保护分支。</p>}</div></SettingsSection>}
@@ -752,10 +838,12 @@ function WorkList<T extends { id: number }>({
   const [state, setState] = useState("open")
   const [stateFilter, setStateFilter] = useState("all")
   const [filter, setFilter] = useState("")
+  const [labelFilter, setLabelFilter] = useState("")
+  const labels = Array.from(new Map(items.flatMap((item) => ((item as T & { labels?: Label[] }).labels || []).map((label) => [label.id, label]))).values()).sort((a, b) => a.name.localeCompare(b.name))
   const visibleItems = items.filter((item) => {
-    const value = item as T & { title?: string; author?: string; state?: string }
+    const value = item as T & { title?: string; author?: string; state?: string; labels?: Label[] }
     const needle = filter.trim().toLowerCase()
-    return (!needle || `${value.title || ""} ${value.author || ""} ${value.state || ""}`.toLowerCase().includes(needle)) && (stateFilter === "all" || value.state === stateFilter)
+    return (!needle || `${value.title || ""} ${value.author || ""} ${value.state || ""}`.toLowerCase().includes(needle)) && (stateFilter === "all" || value.state === stateFilter) && (!labelFilter || value.labels?.some((label) => String(label.id) === labelFilter))
   })
   return (
     <>
@@ -815,7 +903,7 @@ function WorkList<T extends { id: number }>({
           </form>
         </Modal>
       )}
-      <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950"><div className="flex flex-wrap items-center gap-3"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={`筛选${title}（标题、作者或状态）`} className="h-8 min-w-52 flex-1 bg-transparent px-2 text-sm outline-none"/><span className="text-xs text-zinc-500">{visibleItems.length} 项结果</span></div>{items.some((item) => "state" in item) && <div className="mt-3 flex flex-wrap gap-2">{["all", "open", "closed"].map((value) => <button key={value} onClick={() => setStateFilter(value)} className={`rounded-full border px-3 py-1 text-xs ${stateFilter === value ? "border-emerald-600 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : "border-zinc-200 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"}`}>{value === "all" ? "全部" : value === "open" ? "开启" : "已关闭"}</button>)}</div>}</div>
+      <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950"><div className="flex flex-wrap items-center gap-3"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={`筛选${title}（标题、作者或状态）`} className="h-8 min-w-52 flex-1 bg-transparent px-2 text-sm outline-none"/>{labels.length > 0 && <select value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)} className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900"><option value="">所有标签</option>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select>}<span className="text-xs text-zinc-500">{visibleItems.length} 项结果</span></div>{items.some((item) => "state" in item) && <div className="mt-3 flex flex-wrap gap-2">{["all", "open", "closed"].map((value) => <button key={value} onClick={() => setStateFilter(value)} className={`rounded-full border px-3 py-1 text-xs ${stateFilter === value ? "border-emerald-600 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : "border-zinc-200 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"}`}>{value === "all" ? "全部" : value === "open" ? "开启" : "已关闭"}</button>)}</div>}</div>
       <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         {visibleItems.length ? (
           visibleItems.map((item) => (

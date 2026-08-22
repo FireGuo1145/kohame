@@ -39,6 +39,24 @@ type Blob struct {
 	Content string `json:"content"`
 	IsText  bool   `json:"isText"`
 }
+type WikiPage struct {
+	Slug      string    `json:"slug"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type WikiRevision struct {
+	ID       int64     `json:"id"`
+	Slug     string    `json:"slug"`
+	Title    string    `json:"title"`
+	Content  string    `json:"content"`
+	Author   string    `json:"author"`
+	EditedAt time.Time `json:"editedAt"`
+}
+
 type Settings struct {
 	Description     string   `json:"description"`
 	HomepageURL     string   `json:"homepageUrl"`
@@ -540,7 +558,7 @@ func (s *Store) move(ctx context.Context, repo Repository, targetScope, targetNa
 		_ = os.Rename(nextPath, repo.Path)
 		return Repository{}, err
 	}
-	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "pull_request_comments", "releases", "labels", "repository_collaborators", "protected_branches"} {
+	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "pull_request_comments", "releases", "labels", "repository_collaborators", "protected_branches", "wiki_pages", "wiki_page_revisions"} {
 		if _, err = tx.ExecContext(ctx, `UPDATE `+table+` SET repository_name=`+s.placeholders(1)+` WHERE repository_name=`+s.placeholders(2), nextName, repo.FullName); err != nil {
 			_ = os.Rename(nextPath, repo.Path)
 			return Repository{}, err
@@ -570,7 +588,7 @@ func (s *Store) Delete(ctx context.Context, repo Repository) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "pull_request_comments", "releases", "labels", "repository_collaborators", "protected_branches", "repository_forks", "repositories"} {
+	for _, table := range []string{"repository_settings", "repository_stars", "activities", "issues", "issue_comments", "pull_requests", "pull_request_comments", "releases", "labels", "repository_collaborators", "protected_branches", "wiki_pages", "wiki_page_revisions", "repository_forks", "repositories"} {
 		column := "repository_name"
 		if table == "repositories" {
 			column = "name"
@@ -590,6 +608,107 @@ func (s *Store) Delete(ctx context.Context, repo Repository) error {
 	}
 	return os.RemoveAll(trash)
 }
+func (s *Store) ListWikiPages(ctx context.Context, fullName string) ([]WikiPage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT slug,title,author,created_at,updated_at FROM wiki_pages WHERE repository_name=`+s.placeholders(1)+` ORDER BY updated_at DESC, slug`, fullName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pages := []WikiPage{}
+	for rows.Next() {
+		var page WikiPage
+		if err := rows.Scan(&page.Slug, &page.Title, &page.Author, &page.CreatedAt, &page.UpdatedAt); err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+	}
+	return pages, rows.Err()
+}
+
+func (s *Store) WikiPage(ctx context.Context, fullName, slug string) (WikiPage, error) {
+	var page WikiPage
+	err := s.db.QueryRowContext(ctx, `SELECT slug,title,content,author,created_at,updated_at FROM wiki_pages WHERE repository_name=`+s.placeholders(1)+` AND slug=`+s.placeholders(2), fullName, slug).Scan(&page.Slug, &page.Title, &page.Content, &page.Author, &page.CreatedAt, &page.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WikiPage{}, ErrNotFound
+	}
+	return page, err
+}
+
+func (s *Store) SaveWikiPage(ctx context.Context, fullName string, page WikiPage) (WikiPage, error) {
+	page.Slug = strings.ToLower(strings.TrimSpace(page.Slug))
+	page.Title = strings.TrimSpace(page.Title)
+	page.Author = strings.TrimSpace(page.Author)
+	if !validPart(page.Slug) {
+		return WikiPage{}, errors.New("wiki page slug must use lowercase letters, numbers, dots, hyphens, or underscores")
+	}
+	if page.Title == "" || utf8.RuneCountInString(page.Title) > 160 {
+		return WikiPage{}, errors.New("wiki page title must contain 1 to 160 characters")
+	}
+	if utf8.RuneCountInString(page.Content) > 1<<20 {
+		return WikiPage{}, errors.New("wiki page content must not exceed 1 MiB")
+	}
+	if page.Author == "" {
+		return WikiPage{}, errors.New("wiki page author is required")
+	}
+
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WikiPage{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO wiki_pages (repository_name,slug,title,content,author,created_at,updated_at) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6, 7)+`) ON CONFLICT (repository_name,slug) DO UPDATE SET title=EXCLUDED.title,content=EXCLUDED.content,author=EXCLUDED.author,updated_at=EXCLUDED.updated_at`, fullName, page.Slug, page.Title, page.Content, page.Author, now, now); err != nil {
+		return WikiPage{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO wiki_page_revisions (repository_name,slug,title,content,author,edited_at) VALUES (`+s.placeholders(1, 2, 3, 4, 5, 6)+`)`, fullName, page.Slug, page.Title, page.Content, page.Author, now); err != nil {
+		return WikiPage{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return WikiPage{}, err
+	}
+	return s.WikiPage(ctx, fullName, page.Slug)
+}
+
+func (s *Store) DeleteWikiPage(ctx context.Context, fullName, slug string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM wiki_pages WHERE repository_name=`+s.placeholders(1)+` AND slug=`+s.placeholders(2), fullName, slug)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM wiki_page_revisions WHERE repository_name=`+s.placeholders(1)+` AND slug=`+s.placeholders(2), fullName, slug); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) WikiHistory(ctx context.Context, fullName, slug string) ([]WikiRevision, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,slug,title,content,author,edited_at FROM wiki_page_revisions WHERE repository_name=`+s.placeholders(1)+` AND slug=`+s.placeholders(2)+` ORDER BY id DESC`, fullName, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	revisions := []WikiRevision{}
+	for rows.Next() {
+		var revision WikiRevision
+		if err := rows.Scan(&revision.ID, &revision.Slug, &revision.Title, &revision.Content, &revision.Author, &revision.EditedAt); err != nil {
+			return nil, err
+		}
+		revisions = append(revisions, revision)
+	}
+	return revisions, rows.Err()
+}
+
 func (s *Store) Branches(ctx context.Context, repo Repository) ([]Ref, error) {
 	return s.refs(ctx, repo, "refs/heads")
 }

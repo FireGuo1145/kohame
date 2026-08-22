@@ -60,6 +60,8 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS issue_labels (issue_id BIGINT NOT NULL, label_id BIGINT NOT NULL, PRIMARY KEY(issue_id, label_id))`,
 		`CREATE TABLE IF NOT EXISTS repository_collaborators (repository_name VARCHAR(161) NOT NULL, user_id BIGINT NOT NULL, permission VARCHAR(16) NOT NULL, PRIMARY KEY(repository_name, user_id))`,
 		`CREATE TABLE IF NOT EXISTS protected_branches (repository_name VARCHAR(161) NOT NULL, branch VARCHAR(255) NOT NULL, require_pull_request BOOLEAN NOT NULL DEFAULT TRUE, require_approvals INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(repository_name, branch))`,
+		`CREATE TABLE IF NOT EXISTS wiki_pages (repository_name VARCHAR(161) NOT NULL, slug VARCHAR(80) NOT NULL, title VARCHAR(160) NOT NULL, content TEXT NOT NULL, author VARCHAR(80) NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, PRIMARY KEY(repository_name, slug))`,
+		`CREATE TABLE IF NOT EXISTS wiki_page_revisions (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, slug VARCHAR(80) NOT NULL, title VARCHAR(160) NOT NULL, content TEXT NOT NULL, author VARCHAR(80) NOT NULL, edited_at TIMESTAMP NOT NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

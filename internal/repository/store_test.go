@@ -117,3 +117,47 @@ func TestMergePullRequestBranch(t *testing.T) {
 		t.Fatalf("merged file = %#v, %v", file, err)
 	}
 }
+
+func TestWikiPagesPersistAcrossRename(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := repository.NewStore(filepath.Join(root, "repos"), db, "sqlite")
+	ctx := context.Background()
+	repo, err := store.Create(ctx, "alice", "wiki-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.SaveWikiPage(ctx, repo.FullName, repository.WikiPage{Slug: "getting-started", Title: "快速开始", Content: "# Hello", Author: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Title != "快速开始" || created.Content != "# Hello" {
+		t.Fatalf("created wiki page = %#v", created)
+	}
+	if _, err = store.SaveWikiPage(ctx, repo.FullName, repository.WikiPage{Slug: "getting-started", Title: "快速开始", Content: "# Updated", Author: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.WikiHistory(ctx, repo.FullName, "getting-started")
+	if err != nil || len(history) != 2 {
+		t.Fatalf("wiki history = %#v, %v", history, err)
+	}
+	renamed, err := store.Rename(ctx, repo, "wiki-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.WikiPage(ctx, renamed.FullName, "getting-started")
+	if err != nil || stored.Content != "# Updated" {
+		t.Fatalf("renamed wiki page = %#v, %v", stored, err)
+	}
+	if err = store.DeleteWikiPage(ctx, renamed.FullName, "getting-started"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.WikiPage(ctx, renamed.FullName, "getting-started"); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("deleted wiki page lookup error = %v, want ErrNotFound", err)
+	}
+}

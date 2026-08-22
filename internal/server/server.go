@@ -177,6 +177,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/tags", s.tags)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits", s.commits)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/commits/{hash}", s.commit)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/wiki", s.listWikiPages)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/wiki/{slug}", s.wikiPage)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/wiki/{slug}", s.saveWikiPage)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/wiki/{slug}", s.deleteWikiPage)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/settings", s.repositorySettings)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/license", s.repositoryLicense)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/settings", s.updateRepositorySettings)
@@ -1753,6 +1757,98 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, item)
 }
+func (s *Server) wikiAvailable(w http.ResponseWriter, r *http.Request) bool {
+	if !s.hasRepo(w, r) {
+		return false
+	}
+	settings, err := s.repos.Settings(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load repository settings.")
+		return false
+	}
+	if !settings.WikiEnabled {
+		writeError(w, http.StatusNotFound, "Wiki is not enabled for this repository.")
+		return false
+	}
+	return true
+}
+
+func (s *Server) listWikiPages(w http.ResponseWriter, r *http.Request) {
+	if !s.wikiAvailable(w, r) {
+		return
+	}
+	pages, err := s.repos.ListWikiPages(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load wiki pages.")
+		return
+	}
+	writeJSON(w, http.StatusOK, pages)
+}
+
+func (s *Server) wikiPage(w http.ResponseWriter, r *http.Request) {
+	if !s.wikiAvailable(w, r) {
+		return
+	}
+	page, err := s.repos.WikiPage(r.Context(), repoKey(r), r.PathValue("slug"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Wiki page not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load wiki page.")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) saveWikiPage(w http.ResponseWriter, r *http.Request) {
+	if !s.wikiAvailable(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, http.StatusForbidden, "No permission to manage this repository wiki.")
+		return
+	}
+	var input struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	page, err := s.repos.SaveWikiPage(r.Context(), repoKey(r), repository.WikiPage{Slug: r.PathValue("slug"), Title: input.Title, Content: input.Content, Author: user.Username})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) deleteWikiPage(w http.ResponseWriter, r *http.Request) {
+	if !s.wikiAvailable(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, http.StatusForbidden, "No permission to manage this repository wiki.")
+		return
+	}
+	if err := s.repos.DeleteWikiPage(r.Context(), repoKey(r), r.PathValue("slug")); errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "Wiki page not found.")
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not delete wiki page.")
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (s *Server) repositorySettings(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
