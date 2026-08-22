@@ -34,6 +34,37 @@ type User struct {
 	EmailVerified bool      `json:"emailVerified"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
+type OIDCProvider struct {
+	ID           int64     `json:"id"`
+	Slug         string    `json:"slug"`
+	Name         string    `json:"name"`
+	IssuerURL    string    `json:"issuerUrl"`
+	ClientID     string    `json:"clientId"`
+	ClientSecret string    `json:"clientSecret,omitempty"`
+	Scopes       string    `json:"scopes"`
+	Enabled      bool      `json:"enabled"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+type Workflow struct {
+	ID             int64     `json:"id"`
+	RepositoryName string    `json:"repositoryName"`
+	Name           string    `json:"name"`
+	Config         string    `json:"config"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+type WorkflowRun struct {
+	ID             int64      `json:"id"`
+	WorkflowID     int64      `json:"workflowId"`
+	RepositoryName string     `json:"repositoryName"`
+	Event          string     `json:"event"`
+	Status         string     `json:"status"`
+	Output         string     `json:"output"`
+	StartedAt      time.Time  `json:"startedAt"`
+	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
+}
 type SiteSettings struct {
 	Title             string `json:"title"`
 	Description       string `json:"description"`
@@ -389,6 +420,209 @@ func (s *Store) Authenticate(ctx context.Context, identity, password string) (Us
 		return User{}, ErrUnauthorized
 	}
 	return user, nil
+}
+
+func (s *Store) OIDCProviders(ctx context.Context, includeDisabled bool) ([]OIDCProvider, error) {
+	query := `SELECT id,slug,name,issuer_url,client_id,scopes,enabled,created_at,updated_at FROM oidc_providers`
+	if !includeDisabled {
+		query += ` WHERE enabled=` + s.arg(1)
+	}
+	query += ` ORDER BY name,slug`
+	args := []any{}
+	if !includeDisabled {
+		args = append(args, true)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OIDCProvider{}
+	for rows.Next() {
+		var item OIDCProvider
+		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.IssuerURL, &item.ClientID, &item.Scopes, &item.Enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) OIDCProvider(ctx context.Context, slug string) (OIDCProvider, error) {
+	var item OIDCProvider
+	err := s.db.QueryRowContext(ctx, `SELECT id,slug,name,issuer_url,client_id,client_secret,scopes,enabled,created_at,updated_at FROM oidc_providers WHERE slug=`+s.arg(1), strings.ToLower(strings.TrimSpace(slug))).Scan(&item.ID, &item.Slug, &item.Name, &item.IssuerURL, &item.ClientID, &item.ClientSecret, &item.Scopes, &item.Enabled, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OIDCProvider{}, ErrNotFound
+	}
+	return item, err
+}
+func (s *Store) OIDCProviderByID(ctx context.Context, id int64) (OIDCProvider, error) {
+	var item OIDCProvider
+	err := s.db.QueryRowContext(ctx, `SELECT id,slug,name,issuer_url,client_id,client_secret,scopes,enabled,created_at,updated_at FROM oidc_providers WHERE id=`+s.arg(1), id).Scan(&item.ID, &item.Slug, &item.Name, &item.IssuerURL, &item.ClientID, &item.ClientSecret, &item.Scopes, &item.Enabled, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OIDCProvider{}, ErrNotFound
+	}
+	return item, err
+}
+
+func (s *Store) SaveOIDCProvider(ctx context.Context, item OIDCProvider) (OIDCProvider, error) {
+	item.Slug = strings.ToLower(strings.TrimSpace(item.Slug))
+	item.Name = strings.TrimSpace(item.Name)
+	item.IssuerURL = strings.TrimRight(strings.TrimSpace(item.IssuerURL), "/")
+	item.ClientID = strings.TrimSpace(item.ClientID)
+	item.Scopes = strings.TrimSpace(item.Scopes)
+	if item.Slug == "" || !validScope(item.Slug) || item.Name == "" || item.IssuerURL == "" || item.ClientID == "" {
+		return OIDCProvider{}, fmt.Errorf("OIDC provider slug, name, issuer URL, and client ID are required")
+	}
+	if item.Scopes == "" {
+		item.Scopes = "openid profile email"
+	}
+	if item.ID == 0 && item.ClientSecret == "" {
+		return OIDCProvider{}, fmt.Errorf("OIDC client secret is required")
+	}
+	now := time.Now().UTC()
+	if item.ID == 0 {
+		query := `INSERT INTO oidc_providers (slug,name,issuer_url,client_id,client_secret,scopes,enabled,created_at,updated_at) VALUES (` + s.args(1, 2, 3, 4, 5, 6, 7, 8, 9) + `)`
+		if s.driver == "pgsql" {
+			query += " RETURNING id"
+			if err := s.db.QueryRowContext(ctx, query, item.Slug, item.Name, item.IssuerURL, item.ClientID, item.ClientSecret, item.Scopes, item.Enabled, now, now).Scan(&item.ID); err != nil {
+				return OIDCProvider{}, err
+			}
+		} else {
+			result, err := s.db.ExecContext(ctx, query, item.Slug, item.Name, item.IssuerURL, item.ClientID, item.ClientSecret, item.Scopes, item.Enabled, now, now)
+			if err != nil {
+				return OIDCProvider{}, err
+			}
+			item.ID, _ = result.LastInsertId()
+		}
+		item.CreatedAt, item.UpdatedAt = now, now
+	} else {
+		if item.ClientSecret == "" {
+			var existing OIDCProvider
+			existing, _ = s.OIDCProviderByID(ctx, item.ID)
+			item.ClientSecret = existing.ClientSecret
+		}
+		result, err := s.db.ExecContext(ctx, `UPDATE oidc_providers SET slug=`+s.arg(1)+`,name=`+s.arg(2)+`,issuer_url=`+s.arg(3)+`,client_id=`+s.arg(4)+`,client_secret=`+s.arg(5)+`,scopes=`+s.arg(6)+`,enabled=`+s.arg(7)+`,updated_at=`+s.arg(8)+` WHERE id=`+s.arg(9), item.Slug, item.Name, item.IssuerURL, item.ClientID, item.ClientSecret, item.Scopes, item.Enabled, now, item.ID)
+		if err != nil {
+			return OIDCProvider{}, err
+		}
+		if affected, affectedErr := result.RowsAffected(); affectedErr == nil && affected == 0 {
+			return OIDCProvider{}, ErrNotFound
+		}
+	}
+	item.ClientSecret = ""
+	return item, nil
+}
+
+func (s *Store) DeleteOIDCProvider(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM oidc_providers WHERE id=`+s.arg(1), id)
+	return err
+}
+func (s *Store) SaveOIDCState(ctx context.Context, state string, providerID int64, redirectPath string, expires time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO oidc_states (state,provider_id,redirect_path,expires_at) VALUES (`+s.args(1, 2, 3, 4)+`)`, state, providerID, redirectPath, expires)
+	return err
+}
+func (s *Store) ConsumeOIDCState(ctx context.Context, state string) (int64, string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	defer tx.Rollback()
+	var providerID int64
+	var redirect string
+	err = tx.QueryRowContext(ctx, `SELECT provider_id,redirect_path FROM oidc_states WHERE state=`+s.arg(1)+` AND expires_at > `+s.arg(2), state, time.Now().UTC()).Scan(&providerID, &redirect)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", ErrNotFound
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM oidc_states WHERE state=`+s.arg(1), state); err != nil {
+		return 0, "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, "", err
+	}
+	return providerID, redirect, nil
+}
+
+func (s *Store) OIDCUser(ctx context.Context, providerID int64, subject, email, displayName string, emailVerified, allowRegistration bool) (User, error) {
+	var user User
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.email,u.is_admin,u.email_verified,u.created_at FROM oidc_identities i JOIN users u ON u.id=i.user_id WHERE i.provider_id=`+s.arg(1)+` AND i.subject=`+s.arg(2), providerID, subject).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
+	if err == nil {
+		return user, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return User{}, err
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		email = strings.ToLower(strings.TrimSpace(subject)) + "@oidc.invalid"
+	}
+	if emailVerified {
+		_ = s.db.QueryRowContext(ctx, `SELECT id,username,email,is_admin,email_verified,created_at FROM users WHERE email=`+s.arg(1), email).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
+	}
+	if user.ID == 0 {
+		if !allowRegistration {
+			return User{}, ErrForbidden
+		}
+		base := strings.ToLower(strings.TrimSpace(displayName))
+		if base == "" {
+			base = strings.Split(email, "@")[0]
+		}
+		base = sanitizeUsername(base)
+		if len(base) < 3 {
+			base = "oidc-user"
+		}
+		candidate := base
+		for index := 2; ; index++ {
+			var count int
+			_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE username=`+s.arg(1), candidate).Scan(&count)
+			if count == 0 {
+				break
+			}
+			candidate = fmt.Sprintf("%s-%d", base, index)
+		}
+		raw := make([]byte, 24)
+		if _, err := rand.Read(raw); err != nil {
+			return User{}, err
+		}
+		hash, err := bcrypt.GenerateFromPassword(raw, bcrypt.DefaultCost)
+		if err != nil {
+			return User{}, err
+		}
+		now := time.Now().UTC()
+		query := `INSERT INTO users (username,email,password_hash,is_admin,email_verified,created_at) VALUES (` + s.args(1, 2, 3, 4, 5, 6) + `)`
+		if s.driver == "pgsql" {
+			query += " RETURNING id"
+			err = s.db.QueryRowContext(ctx, query, candidate, email, string(hash), false, true, now).Scan(&user.ID)
+		} else {
+			result, insertErr := s.db.ExecContext(ctx, query, candidate, email, string(hash), false, true, now)
+			err = insertErr
+			if err == nil {
+				user.ID, _ = result.LastInsertId()
+			}
+		}
+		if err != nil {
+			return User{}, err
+		}
+		user = User{ID: user.ID, Username: candidate, Email: email, EmailVerified: emailVerified, CreatedAt: now}
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO oidc_identities (provider_id,subject,user_id,email,created_at) VALUES (`+s.args(1, 2, 3, 4, 5)+`)`, providerID, subject, user.ID, email, time.Now().UTC())
+	if err != nil {
+		return User{}, err
+	}
+	return user, nil
+}
+
+func sanitizeUsername(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error) {

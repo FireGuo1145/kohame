@@ -61,6 +61,8 @@ import type {
   TreeEntry,
   User,
   WikiPage,
+  Workflow,
+  WorkflowRun,
 } from "@/lib/forge-types"
 
 function RepositoryView({
@@ -193,6 +195,7 @@ function RepositoryView({
   const tabs = [
     ["code", "代码", <Code2 />],
     ["wiki", "Wiki", <BookOpen />],
+    ["workflows", "工作流", <GitBranch />],
     ["commits", "提交记录", <GitCommitHorizontal />],
     ["issues", "议题", <CircleDot />],
     ["pulls", "拉取请求", <GitPullRequest />],
@@ -419,6 +422,7 @@ function RepositoryView({
             }
           />
         )}
+        {tab === "workflows" && <WorkflowWorkspace name={name} user={user} />}
         {tab === "commits" && (
           <RepositoryList
             name={name}
@@ -1712,6 +1716,158 @@ function WikiWorkspace({
             title="开始编写项目 Wiki"
             text="创建团队共享的安装说明、开发规范或项目知识库。"
           />
+        )}
+      </section>
+    </div>
+  )
+}
+
+function WorkflowWorkspace({
+  name,
+  user,
+}: {
+  name: string
+  user: User | null
+}) {
+  const [items, setItems] = useState<Workflow[]>([])
+  const [runs, setRuns] = useState<WorkflowRun[]>([])
+  const [workflowName, setWorkflowName] = useState("")
+  const [config, setConfig] = useState(
+    '{\n  "on": ["push", "workflow_dispatch"],\n  "steps": [{"run": "echo hello"}]\n}'
+  )
+  const [message, setMessage] = useState("")
+  const load = async () => {
+    const [next, history] = await Promise.all([
+      api<Workflow[]>(`/api/repos/${name}/workflows`),
+      api<WorkflowRun[]>(`/api/repos/${name}/workflow-runs`),
+    ])
+    setItems(next)
+    setRuns(history)
+  }
+  useEffect(() => {
+    void load().catch((cause: unknown) =>
+      setMessage(cause instanceof Error ? cause.message : "无法加载工作流。")
+    )
+  }, [name])
+  const save = async () => {
+    try {
+      const item = await api<Workflow>(`/api/repos/${name}/workflows/0`, {
+        method: "PUT",
+        body: JSON.stringify({ name: workflowName, config, enabled: true }),
+      })
+      setItems([item, ...items])
+      setWorkflowName("")
+      setMessage("工作流已保存。")
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "无法保存工作流。")
+    }
+  }
+  const run = async () => {
+    try {
+      const next = await api<WorkflowRun[]>(
+        `/api/repos/${name}/workflow-runs`,
+        { method: "POST", body: JSON.stringify({ event: "workflow_dispatch" }) }
+      )
+      setRuns([...next, ...runs])
+      setMessage("工作流已运行。")
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "无法运行工作流。")
+    }
+  }
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold">工作流</h2>
+          <p className="mt-1 text-sm text-zinc-500">
+            使用 JSON 定义触发事件和 shell 步骤。
+          </p>
+        </div>
+        {user && (
+          <Button onPress={() => void run()}>
+            <GitBranch />
+            手动运行
+          </Button>
+        )}
+      </div>
+      {message && (
+        <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
+          {message}
+        </p>
+      )}{" "}
+      {user && (
+        <section className="space-y-3 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+          <Field
+            label="工作流名称"
+            value={workflowName}
+            onChange={setWorkflowName}
+            placeholder="build"
+          />
+          <label className="block text-sm font-medium">
+            配置
+            <textarea
+              value={config}
+              onChange={(event) => setConfig(event.target.value)}
+              className="mt-1.5 min-h-44 w-full rounded-lg border border-zinc-200 bg-transparent p-3 font-mono text-xs dark:border-zinc-700"
+            />
+          </label>
+          <Button onPress={() => void save()} isDisabled={!workflowName.trim()}>
+            <Plus />
+            保存工作流
+          </Button>
+        </section>
+      )}
+      <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <h3 className="border-b border-zinc-100 px-5 py-4 font-semibold dark:border-zinc-800">
+          已配置工作流
+        </h3>
+        {items.length ? (
+          items.map((item) => (
+            <div
+              key={item.id}
+              className="flex items-center gap-3 border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
+            >
+              <strong>{item.name}</strong>
+              <span className="text-xs text-zinc-500">
+                {item.enabled ? "已启用" : "已停用"}
+              </span>
+            </div>
+          ))
+        ) : (
+          <p className="p-6 text-sm text-zinc-500">暂无工作流。</p>
+        )}
+      </section>
+      <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <h3 className="border-b border-zinc-100 px-5 py-4 font-semibold dark:border-zinc-800">
+          运行记录
+        </h3>
+        {runs.length ? (
+          runs.map((item) => (
+            <div
+              key={item.id}
+              className="border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
+            >
+              <div className="flex justify-between">
+                <strong>{item.event}</strong>
+                <span
+                  className={
+                    item.status === "success"
+                      ? "text-emerald-600"
+                      : "text-red-600"
+                  }
+                >
+                  {item.status}
+                </span>
+              </div>
+              {item.output && (
+                <pre className="mt-2 max-h-32 overflow-auto rounded bg-zinc-950 p-2 text-xs text-zinc-200">
+                  {item.output}
+                </pre>
+              )}
+            </div>
+          ))
+        ) : (
+          <p className="p-6 text-sm text-zinc-500">暂无运行记录。</p>
         )}
       </section>
     </div>

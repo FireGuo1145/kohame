@@ -73,6 +73,11 @@ func Open(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		`CREATE TABLE IF NOT EXISTS protected_branches (repository_name VARCHAR(161) NOT NULL, branch VARCHAR(255) NOT NULL, require_pull_request BOOLEAN NOT NULL DEFAULT TRUE, require_approvals INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(repository_name, branch))`,
 		`CREATE TABLE IF NOT EXISTS wiki_pages (repository_name VARCHAR(161) NOT NULL, slug VARCHAR(80) NOT NULL, title VARCHAR(160) NOT NULL, content TEXT NOT NULL, author VARCHAR(80) NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, PRIMARY KEY(repository_name, slug))`,
 		`CREATE TABLE IF NOT EXISTS wiki_page_revisions (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, slug VARCHAR(80) NOT NULL, title VARCHAR(160) NOT NULL, content TEXT NOT NULL, author VARCHAR(80) NOT NULL, edited_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS oidc_providers (id ` + idColumn + `, slug VARCHAR(80) UNIQUE NOT NULL, name VARCHAR(120) NOT NULL, issuer_url VARCHAR(2048) NOT NULL, client_id VARCHAR(255) NOT NULL, client_secret TEXT NOT NULL, scopes VARCHAR(1000) NOT NULL DEFAULT 'openid profile email', enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS oidc_identities (provider_id BIGINT NOT NULL, subject VARCHAR(255) NOT NULL, user_id BIGINT NOT NULL, email VARCHAR(255) NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL, PRIMARY KEY (provider_id, subject))`,
+		`CREATE TABLE IF NOT EXISTS oidc_states (state VARCHAR(128) PRIMARY KEY, provider_id BIGINT NOT NULL, redirect_path VARCHAR(2048) NOT NULL DEFAULT '/', expires_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS workflows (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, name VARCHAR(120) NOT NULL, config TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, UNIQUE(repository_name, name))`,
+		`CREATE TABLE IF NOT EXISTS workflow_runs (id ` + idColumn + `, workflow_id BIGINT NOT NULL, repository_name VARCHAR(161) NOT NULL, event VARCHAR(80) NOT NULL, status VARCHAR(16) NOT NULL, output TEXT NOT NULL DEFAULT '', started_at TIMESTAMP NOT NULL, finished_at TIMESTAMP)`,
 	}
 	for _, statement := range statements {
 		if err := db.Exec(statement).Error; err != nil {

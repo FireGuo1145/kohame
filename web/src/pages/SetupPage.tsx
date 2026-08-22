@@ -3,9 +3,20 @@ import { GitBranch, KeyRound, LogIn, UserPlus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Field } from "@/components/forge-ui"
 import { api } from "@/lib/forge-api"
-import type { CaptchaConfig, SiteSettings, User } from "@/lib/forge-types"
+import type {
+  CaptchaConfig,
+  OIDCProvider,
+  SiteSettings,
+  User,
+} from "@/lib/forge-types"
 
-declare global { interface Window { hcaptcha?: { render: (element: HTMLElement, options: Record<string, unknown>) => void } } }
+declare global {
+  interface Window {
+    hcaptcha?: {
+      render: (element: HTMLElement, options: Record<string, unknown>) => void
+    }
+  }
+}
 
 export default function SetupPage({
   onComplete,
@@ -52,7 +63,8 @@ export default function SetupPage({
           创建站点管理员
         </h1>
         <p className="mt-2 text-sm leading-6 text-zinc-500">
-          完成一次性初始化以保护你的 Git 代码协作平台。登录后可随时调整站点设置。
+          完成一次性初始化以保护你的 Git
+          代码协作平台。登录后可随时调整站点设置。
         </p>
         <div className="mt-6 space-y-3">
           <Field
@@ -104,6 +116,12 @@ export function AuthMenu({
   const [password, setPassword] = useState("")
   const [captchaToken, setCaptchaToken] = useState("")
   const [message, setMessage] = useState("")
+  const [oidcProviders, setOidcProviders] = useState<OIDCProvider[]>([])
+  useEffect(() => {
+    void api<OIDCProvider[]>("/api/auth/oidc")
+      .then(setOidcProviders)
+      .catch(() => setOidcProviders([]))
+  }, [])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!mode) return
@@ -133,6 +151,19 @@ export function AuthMenu({
   if (!mode)
     return (
       <div className="flex gap-1">
+        {oidcProviders.map((provider) => (
+          <Button
+            key={provider.slug}
+            variant="outline"
+            size="sm"
+            onPress={() => {
+              window.location.href = `/api/auth/oidc/${encodeURIComponent(provider.slug)}/start?redirect=${encodeURIComponent(window.location.pathname)}`
+            }}
+          >
+            <LogIn />
+            {provider.name}
+          </Button>
+        ))}
         <Button variant="ghost" size="sm" onPress={() => setMode("login")}>
           <LogIn />
           登录
@@ -140,7 +171,7 @@ export function AuthMenu({
         {site.allowRegistration && (
           <Button size="sm" onPress={() => setMode("register")}>
             <UserPlus />
-          注册
+            注册
           </Button>
         )}
       </div>

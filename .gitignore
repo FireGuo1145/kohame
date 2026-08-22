@@ -1,6 +1,7 @@
 data/
 verify-data/
 web/dist/
+internal/web/dist/
 web/node_modules/
 .yarn/
 .pnp.*

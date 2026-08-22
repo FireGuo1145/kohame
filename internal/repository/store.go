@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -55,6 +56,25 @@ type WikiRevision struct {
 	Content  string    `json:"content"`
 	Author   string    `json:"author"`
 	EditedAt time.Time `json:"editedAt"`
+}
+type Workflow struct {
+	ID             int64     `json:"id"`
+	RepositoryName string    `json:"repositoryName"`
+	Name           string    `json:"name"`
+	Config         string    `json:"config"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+type WorkflowRun struct {
+	ID             int64      `json:"id"`
+	WorkflowID     int64      `json:"workflowId"`
+	RepositoryName string     `json:"repositoryName"`
+	Event          string     `json:"event"`
+	Status         string     `json:"status"`
+	Output         string     `json:"output"`
+	StartedAt      time.Time  `json:"startedAt"`
+	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
 }
 
 type Settings struct {
@@ -647,6 +667,121 @@ func (s *Store) ListWikiPages(ctx context.Context, fullName string) ([]WikiPage,
 		pages = append(pages, page)
 	}
 	return pages, rows.Err()
+}
+
+func (s *Store) ListWorkflows(ctx context.Context, fullName string) ([]Workflow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,repository_name,name,config,enabled,created_at,updated_at FROM workflows WHERE repository_name=`+s.placeholders(1)+` ORDER BY name`, fullName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Workflow{}
+	for rows.Next() {
+		var item Workflow
+		if err := rows.Scan(&item.ID, &item.RepositoryName, &item.Name, &item.Config, &item.Enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+func (s *Store) SaveWorkflow(ctx context.Context, fullName string, item Workflow) (Workflow, error) {
+	item.Name = strings.TrimSpace(item.Name)
+	item.Config = strings.TrimSpace(item.Config)
+	if item.Name == "" || len(item.Name) > 120 || item.Config == "" {
+		return Workflow{}, errors.New("workflow name and config are required")
+	}
+	var parsed struct {
+		On    []string `json:"on"`
+		Steps []struct {
+			Run string `json:"run"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(item.Config), &parsed); err != nil || len(parsed.On) == 0 || len(parsed.Steps) == 0 {
+		return Workflow{}, errors.New("workflow config must include on and steps")
+	}
+	for _, event := range parsed.On {
+		if event != "push" && event != "issues" && event != "pull_request" && event != "release" && event != "workflow_dispatch" {
+			return Workflow{}, errors.New("unsupported workflow event")
+		}
+	}
+	for _, step := range parsed.Steps {
+		if strings.TrimSpace(step.Run) == "" || len(step.Run) > 2000 {
+			return Workflow{}, errors.New("workflow steps must include run commands")
+		}
+	}
+	now := time.Now().UTC()
+	if item.ID == 0 {
+		query := `INSERT INTO workflows (repository_name,name,config,enabled,created_at,updated_at) VALUES (` + s.placeholders(1, 2, 3, 4, 5, 6) + `)`
+		if s.driver == "pgsql" {
+			query += " RETURNING id"
+			if err := s.db.QueryRowContext(ctx, query, fullName, item.Name, item.Config, item.Enabled, now, now).Scan(&item.ID); err != nil {
+				return Workflow{}, err
+			}
+		} else {
+			result, err := s.db.ExecContext(ctx, query, fullName, item.Name, item.Config, item.Enabled, now, now)
+			if err != nil {
+				return Workflow{}, err
+			}
+			item.ID, _ = result.LastInsertId()
+		}
+		item.CreatedAt = now
+	} else {
+		result, err := s.db.ExecContext(ctx, `UPDATE workflows SET name=`+s.placeholders(1)+`,config=`+s.placeholders(2)+`,enabled=`+s.placeholders(3)+`,updated_at=`+s.placeholders(4)+` WHERE id=`+s.placeholders(5)+` AND repository_name=`+s.placeholders(6), item.Name, item.Config, item.Enabled, now, item.ID, fullName)
+		if err != nil {
+			return Workflow{}, err
+		}
+		if affected, affectedErr := result.RowsAffected(); affectedErr == nil && affected == 0 {
+			return Workflow{}, ErrNotFound
+		}
+	}
+	item.RepositoryName = fullName
+	item.UpdatedAt = now
+	return item, nil
+}
+func (s *Store) DeleteWorkflow(ctx context.Context, fullName string, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM workflows WHERE repository_name=`+s.placeholders(1)+` AND id=`+s.placeholders(2), fullName, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+func (s *Store) ListWorkflowRuns(ctx context.Context, fullName string, limit int) ([]WorkflowRun, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,workflow_id,repository_name,event,status,output,started_at,finished_at FROM workflow_runs WHERE repository_name=`+s.placeholders(1)+` ORDER BY id DESC LIMIT `+fmt.Sprint(limit), fullName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowRun{}
+	for rows.Next() {
+		var item WorkflowRun
+		if err := rows.Scan(&item.ID, &item.WorkflowID, &item.RepositoryName, &item.Event, &item.Status, &item.Output, &item.StartedAt, &item.FinishedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+func (s *Store) CreateWorkflowRun(ctx context.Context, run WorkflowRun) (int64, error) {
+	query := `INSERT INTO workflow_runs (workflow_id,repository_name,event,status,output,started_at,finished_at) VALUES (` + s.placeholders(1, 2, 3, 4, 5, 6, 7) + `)`
+	if s.driver == "pgsql" {
+		query += " RETURNING id"
+		var id int64
+		err := s.db.QueryRowContext(ctx, query, run.WorkflowID, run.RepositoryName, run.Event, run.Status, run.Output, run.StartedAt, run.FinishedAt).Scan(&id)
+		return id, err
+	}
+	result, err := s.db.ExecContext(ctx, query, run.WorkflowID, run.RepositoryName, run.Event, run.Status, run.Output, run.StartedAt, run.FinishedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
 }
 
 func (s *Store) WikiPage(ctx context.Context, fullName, slug string) (WikiPage, error) {

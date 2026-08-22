@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,8 +23,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	sshserver "github.com/gliderlabs/ssh"
 	cryptossh "golang.org/x/crypto/ssh"
+	"golang.org/x/oauth2"
 	"kohame/internal/config"
 	"kohame/internal/database"
 	"kohame/internal/forge"
@@ -129,6 +133,9 @@ func (s *Server) gitSSH(session sshserver.Session) {
 		_ = session.Exit(1)
 		return
 	}
+	if command[0] == "git-receive-pack" {
+		s.queueWorkflowEvent(repoName, "push")
+	}
 	_ = session.Exit(0)
 }
 
@@ -141,8 +148,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ssh", s.sshSettings)
 	mux.HandleFunc("GET /api/admin/settings", s.adminSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", s.updateSettings)
+	mux.HandleFunc("GET /api/admin/oidc", s.adminOIDCProviders)
+	mux.HandleFunc("POST /api/admin/oidc", s.createOIDCProvider)
+	mux.HandleFunc("PATCH /api/admin/oidc/{id}", s.updateOIDCProvider)
+	mux.HandleFunc("DELETE /api/admin/oidc/{id}", s.deleteOIDCProvider)
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("POST /api/auth/login", s.login)
+	mux.HandleFunc("GET /api/auth/oidc", s.oidcProviders)
+	mux.HandleFunc("GET /api/auth/oidc/{slug}/start", s.oidcStart)
+	mux.HandleFunc("GET /api/auth/oidc/{slug}/callback", s.oidcCallback)
 	mux.HandleFunc("GET /api/auth/verify", s.verifyEmail)
 	mux.HandleFunc("POST /api/auth/verification", s.resendVerification)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
@@ -188,6 +202,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/settings", s.repositorySettings)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/license", s.repositoryLicense)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/settings", s.updateRepositorySettings)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/workflows", s.workflows)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/workflows/{id}", s.saveWorkflow)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/workflows/{id}", s.deleteWorkflow)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/workflow-runs", s.workflowRuns)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/workflow-runs", s.runWorkflows)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/visibility", s.updateRepositoryVisibility)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/collaborators", s.collaborators)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/collaborators/{username}", s.setCollaborator)
@@ -463,6 +482,194 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.startSession(w, r, user)
 	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) adminOIDCProviders(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	items, err := s.forge.OIDCProviders(r.Context(), true)
+	if err != nil {
+		writeError(w, 500, "Could not load OIDC providers.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var item forge.OIDCProvider
+	if !decodeJSON(w, r, &item) {
+		return
+	}
+	saved, err := s.forge.SaveOIDCProvider(r.Context(), item)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, saved)
+}
+func (s *Server) updateOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, "Invalid provider ID.")
+		return
+	}
+	var item forge.OIDCProvider
+	if !decodeJSON(w, r, &item) {
+		return
+	}
+	item.ID = id
+	saved, err := s.forge.SaveOIDCProvider(r.Context(), item)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "OIDC provider not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, saved)
+}
+func (s *Server) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, "Invalid provider ID.")
+		return
+	}
+	if err := s.forge.DeleteOIDCProvider(r.Context(), id); err != nil {
+		writeError(w, 500, "Could not delete OIDC provider.")
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) oidcProviders(w http.ResponseWriter, r *http.Request) {
+	items, err := s.forge.OIDCProviders(r.Context(), false)
+	if err != nil {
+		writeError(w, 500, "Could not load OIDC providers.")
+		return
+	}
+	for i := range items {
+		items[i].ClientSecret = ""
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
+	provider, err := s.forge.OIDCProvider(r.Context(), r.PathValue("slug"))
+	if errors.Is(err, forge.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "Could not load OIDC provider.")
+		return
+	}
+	if !provider.Enabled {
+		http.NotFound(w, r)
+		return
+	}
+	stateBytes := make([]byte, 32)
+	if _, err := rand.Read(stateBytes); err != nil {
+		writeError(w, 500, "Could not start OIDC login.")
+		return
+	}
+	state := base64.RawURLEncoding.EncodeToString(stateBytes)
+	redirect := r.URL.Query().Get("redirect")
+	if redirect == "" || !strings.HasPrefix(redirect, "/") {
+		redirect = "/"
+	}
+	if err := s.forge.SaveOIDCState(r.Context(), state, provider.ID, redirect, time.Now().UTC().Add(10*time.Minute)); err != nil {
+		writeError(w, 500, "Could not start OIDC login.")
+		return
+	}
+	providerConfig, err := oidc.NewProvider(r.Context(), provider.IssuerURL)
+	if err != nil {
+		writeError(w, 502, "OIDC issuer is unavailable.")
+		return
+	}
+	oauthConfig := oauth2.Config{ClientID: provider.ClientID, ClientSecret: provider.ClientSecret, Endpoint: providerConfig.Endpoint(), Scopes: strings.Fields(provider.Scopes), RedirectURL: s.oidcRedirectURL(r, provider.Slug)}
+	http.Redirect(w, r, oauthConfig.AuthCodeURL(state), http.StatusFound)
+}
+func (s *Server) oidcRedirectURL(r *http.Request, slug string) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + "/api/auth/oidc/" + url.PathEscape(slug) + "/callback"
+}
+func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	providerID, redirect, err := s.forge.ConsumeOIDCState(r.Context(), r.URL.Query().Get("state"))
+	if err != nil {
+		http.Error(w, "OIDC login state is invalid or expired.", 400)
+		return
+	}
+	provider, err := s.forge.OIDCProviderByID(r.Context(), providerID)
+	if err != nil {
+		http.Error(w, "OIDC provider is unavailable.", 502)
+		return
+	}
+	if !provider.Enabled {
+		http.Error(w, "OIDC provider is disabled.", 404)
+		return
+	}
+	providerConfig, err := oidc.NewProvider(r.Context(), provider.IssuerURL)
+	if err != nil {
+		http.Error(w, "OIDC issuer is unavailable.", 502)
+		return
+	}
+	oauthConfig := oauth2.Config{ClientID: provider.ClientID, ClientSecret: provider.ClientSecret, Endpoint: providerConfig.Endpoint(), Scopes: strings.Fields(provider.Scopes), RedirectURL: s.oidcRedirectURL(r, provider.Slug)}
+	token, err := oauthConfig.Exchange(r.Context(), r.URL.Query().Get("code"))
+	if err != nil {
+		http.Error(w, "OIDC authorization failed.", 401)
+		return
+	}
+	userInfo, err := providerConfig.UserInfo(r.Context(), oauth2.StaticTokenSource(token))
+	if err != nil {
+		http.Error(w, "Could not read OIDC profile.", 401)
+		return
+	}
+	var claims struct {
+		Subject           string `json:"sub"`
+		Email             string `json:"email"`
+		EmailVerified     bool   `json:"email_verified"`
+		Name              string `json:"name"`
+		PreferredUsername string `json:"preferred_username"`
+	}
+	if err := userInfo.Claims(&claims); err != nil {
+		http.Error(w, "Could not read OIDC profile.", 401)
+		return
+	}
+	if strings.TrimSpace(claims.Subject) == "" {
+		http.Error(w, "OIDC profile has no subject.", 401)
+		return
+	}
+	display := claims.PreferredUsername
+	if display == "" {
+		display = claims.Name
+	}
+	settings, settingsErr := s.forge.Settings(r.Context())
+	if settingsErr != nil {
+		http.Error(w, "Could not load site settings.", 500)
+		return
+	}
+	user, err := s.forge.OIDCUser(r.Context(), provider.ID, claims.Subject, claims.Email, display, claims.EmailVerified, settings.AllowRegistration)
+	if errors.Is(err, forge.ErrForbidden) {
+		http.Error(w, "OIDC registration is disabled.", 403)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Could not create OIDC account.", 500)
+		return
+	}
+	s.startSession(w, r, user)
+	http.Redirect(w, r, redirect, http.StatusFound)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -1060,6 +1267,7 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 		item.Labels, _ = s.forge.IssueLabels(r.Context(), item.ID)
 	}
 	s.notifyRepositoryOwner(r, user, "issue", user.Username+" opened an issue", item.Title)
+	s.queueWorkflowEvent(repoKey(r), "issues")
 	writeJSON(w, 201, item)
 }
 func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
@@ -1213,6 +1421,7 @@ func (s *Server) createPullRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notifyRepositoryOwner(r, user, "pull_request", user.Username+" opened a pull request", item.Title)
+	s.queueWorkflowEvent(repoKey(r), "pull_request")
 	writeJSON(w, 201, item)
 }
 func (s *Server) pullRequest(w http.ResponseWriter, r *http.Request) {
@@ -1337,6 +1546,8 @@ func (s *Server) mergePullRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.autoClosePullIssues(r, pull)
+	s.queueWorkflowEvent(repoKey(r), "push")
+	s.queueWorkflowEvent(repoKey(r), "pull_request")
 	writeJSON(w, 200, commit)
 }
 func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
@@ -1459,6 +1670,7 @@ func (s *Server) createRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
+	s.queueWorkflowEvent(repoKey(r), "release")
 	writeJSON(w, 201, item)
 }
 func (s *Server) uploadReleaseAsset(w http.ResponseWriter, r *http.Request) {
@@ -1612,6 +1824,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "无法创建文件提交："+err.Error())
 		return
 	}
+	s.queueWorkflowEvent(repoKey(r), "push")
 	writeJSON(w, 201, commit)
 }
 
@@ -1892,6 +2105,200 @@ func (s *Server) updateRepositorySettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, 200, value)
+}
+
+func (s *Server) workflows(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.repos.ListWorkflows(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "Could not load workflows.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) saveWorkflow(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "No permission to manage workflows.")
+		return
+	}
+	var input repository.Workflow
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil && id > 0 {
+		input.ID = id
+	}
+	saved, err := s.repos.SaveWorkflow(r.Context(), repoKey(r), input)
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, 404, "Workflow not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, saved)
+}
+func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "No permission to manage workflows.")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, "Invalid workflow ID.")
+		return
+	}
+	if err := s.repos.DeleteWorkflow(r.Context(), repoKey(r), id); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, 404, "Workflow not found.")
+		} else {
+			writeError(w, 500, "Could not delete workflow.")
+		}
+		return
+	}
+	w.WriteHeader(204)
+}
+func (s *Server) workflowRuns(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.repos.ListWorkflowRuns(r.Context(), repoKey(r), 50)
+	if err != nil {
+		writeError(w, 500, "Could not load workflow runs.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) runWorkflows(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !s.canManageRepository(r, user) {
+		writeError(w, 403, "No permission to run workflows.")
+		return
+	}
+	var input struct {
+		Event string `json:"event"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Event == "" {
+		input.Event = "workflow_dispatch"
+	}
+	runs, err := s.executeWorkflows(r.Context(), repoKey(r), input.Event)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, runs)
+}
+func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) ([]repository.WorkflowRun, error) {
+	items, err := s.repos.ListWorkflows(ctx, repoName)
+	if err != nil {
+		return nil, err
+	}
+	runs := []repository.WorkflowRun{}
+	for _, workflow := range items {
+		if !workflow.Enabled {
+			continue
+		}
+		var config struct {
+			On    []string `json:"on"`
+			Steps []struct {
+				Run string `json:"run"`
+			} `json:"steps"`
+		}
+		if err := json.Unmarshal([]byte(workflow.Config), &config); err != nil {
+			continue
+		}
+		matches := false
+		for _, trigger := range config.On {
+			if trigger == event || trigger == "workflow_dispatch" && event == "workflow_dispatch" {
+				matches = true
+			}
+		}
+		if !matches {
+			continue
+		}
+		started := time.Now().UTC()
+		run := repository.WorkflowRun{WorkflowID: workflow.ID, RepositoryName: repoName, Event: event, Status: "running", StartedAt: started}
+		var output strings.Builder
+		failed := false
+		parts := strings.SplitN(repoName, "/", 2)
+		work, workErr := os.MkdirTemp("", "kohame-workflow-")
+		if workErr == nil {
+			if len(parts) != 2 {
+				workErr = repository.ErrNotFound
+			} else if repo, repoErr := s.repos.Get(parts[0], parts[1]); repoErr != nil {
+				workErr = repoErr
+			} else if cloneOutput, cloneErr := exec.CommandContext(ctx, "git", "clone", "--quiet", repo.Path, work).CombinedOutput(); cloneErr != nil {
+				workErr = fmt.Errorf("clone repository: %w: %s", cloneErr, strings.TrimSpace(string(cloneOutput)))
+			}
+		}
+		if workErr != nil {
+			failed = true
+			output.WriteString(workErr.Error())
+		}
+		for _, step := range config.Steps {
+			if failed {
+				break
+			}
+			command := exec.CommandContext(ctx, "sh", "-c", step.Run)
+			command.Dir = work
+			value, runErr := command.CombinedOutput()
+			output.Write(value)
+			if runErr != nil {
+				failed = true
+				break
+			}
+		}
+		if work != "" {
+			_ = os.RemoveAll(work)
+		}
+		status := "success"
+		if failed {
+			status = "failure"
+		}
+		finished := time.Now().UTC()
+		run.Status = status
+		run.Output = output.String()
+		run.FinishedAt = &finished
+		id, err := s.repos.CreateWorkflowRun(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		run.ID = id
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+func (s *Server) queueWorkflowEvent(repoName, event string) {
+	go func() {
+		_, _ = s.executeWorkflows(context.Background(), repoName, event)
+	}()
 }
 
 func (s *Server) updateRepositoryVisibility(w http.ResponseWriter, r *http.Request) {
@@ -2322,6 +2729,9 @@ func (s *Server) serveGit(w http.ResponseWriter, r *http.Request, scope, name, r
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(output[headerEnd+separator:])
+	if r.Method == http.MethodPost && rest == "git-receive-pack" {
+		s.queueWorkflowEvent(scope+"/"+name, "push")
+	}
 }
 
 func (s *Server) reposRoot() string { return getStoreRoot(s.repos) }

@@ -58,11 +58,13 @@ Vite proxies `/api` and `/git` to `http://localhost:3000`, so the frontend behav
 ## Forge features
 
 - One-time OOBE administrator creation, registration, login, and HttpOnly sessions.
+- OIDC login with multiple configurable identity providers and automatic account linking.
 - Administrator-controlled title, description, and registration policy.
 - GitHub-style repository actions: Star, bare-Git Fork, fork attribution, and in-app notifications for stars, forks, issues, and pull requests.
 - Work dashboard plus user and organization home pages.
 - Email verification with one-time, 24-hour links. Configure SMTP under **Site settings → SMTP 邮件服务** (host, port, username, password, and From address); STARTTLS is negotiated when the mail server advertises it.
 - Repository creation plus Git smart HTTP with browser session or HTTP Basic authentication.
+- Repository workflows with JSON event triggers (`push`, `issues`, `pull_request`, `release`, and `workflow_dispatch`) and run history.
 - Repository-scoped issues, pull requests, releases, and activity-based contributor summaries.
 
-This is a compact forge, not a full Gitea replacement yet: pull requests provide file diffs, comments, and server-side merge commits, but do not yet offer inline review comments, approval workflows, or CI checks. Use HTTPS when serving it beyond a trusted local network.
+This is a compact forge, not a full Gitea replacement yet: pull requests provide file diffs, comments, and server-side merge commits, while workflows provide lightweight repository automation rather than a full CI runner. Use HTTPS when serving it beyond a trusted local network.
