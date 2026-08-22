@@ -281,6 +281,31 @@ export default function SiteSettingsPage({
             <p className="text-sm text-zinc-500">
               所有仓库统一使用此仓库相对目录，遵循 GitHub Actions 的 YAML 工作流格式。
             </p>
+            <div className="space-y-3 border-t border-zinc-200 pt-4 dark:border-zinc-700">
+              <Toggle
+                label="启用远程 Runner"
+                description="将工作流发送到独立 Runner 执行，支持 uses 引用的 Action。"
+                checked={value.runnerEnabled}
+                onChange={(runnerEnabled) => setValue({ ...value, runnerEnabled })}
+              />
+              {value.runnerEnabled && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Runner 地址"
+                    value={value.runnerUrl}
+                    onChange={(runnerUrl) => setValue({ ...value, runnerUrl })}
+                    placeholder="http://runner.internal:8090"
+                  />
+                  <Field
+                    label="Runner Token"
+                    value={value.runnerToken}
+                    onChange={(runnerToken) => setValue({ ...value, runnerToken })}
+                    placeholder="共享认证令牌"
+                    type="password"
+                  />
+                </div>
+              )}
+            </div>
             <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
               变更前请先迁移数据并做好备份，再重启服务使配置生效。
             </p>

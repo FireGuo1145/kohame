@@ -28,3 +28,18 @@ func TestParseWorkflowDefinitionLegacyShape(t *testing.T) {
 		t.Fatalf("legacy config was not accepted: %#v, %v", definition, err)
 	}
 }
+
+func TestParseWorkflowDefinitionUsesAction(t *testing.T) {
+	definition, err := ParseWorkflowDefinition(`on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: go test ./...
+`)
+	if err != nil || definition.Steps[0].Uses != "actions/checkout@v4" {
+		t.Fatalf("uses action was not parsed: %#v, %v", definition, err)
+	}
+}

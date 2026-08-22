@@ -68,8 +68,10 @@ type WorkflowJob struct {
 	Steps  []WorkflowStep `yaml:"steps"`
 }
 type WorkflowStep struct {
-	Name string `yaml:"name,omitempty"`
-	Run  string `yaml:"run"`
+	Name string            `yaml:"name,omitempty" json:"name,omitempty"`
+	Run  string            `yaml:"run" json:"run,omitempty"`
+	Uses string            `yaml:"uses" json:"uses,omitempty"`
+	With map[string]string `yaml:"with,omitempty" json:"with,omitempty"`
 }
 
 // ParseWorkflowDefinition accepts GitHub Actions YAML and the legacy compact JSON shape.
@@ -118,6 +120,11 @@ func ParseWorkflowDefinition(content string) (WorkflowDefinition, error) {
 	if len(events) == 0 || len(steps) == 0 {
 		return WorkflowDefinition{}, errors.New("workflow config must include on and jobs with steps")
 	}
+	for _, step := range steps {
+		if strings.TrimSpace(step.Run) == "" && strings.TrimSpace(step.Uses) == "" {
+			return WorkflowDefinition{}, errors.New("workflow steps must include run or uses")
+		}
+	}
 	return WorkflowDefinition{Name: strings.TrimSpace(raw.Name), On: events, Jobs: raw.Jobs, Steps: steps}, nil
 }
 
@@ -137,6 +144,9 @@ type SiteSettings struct {
 	AllowRegistration bool   `json:"allowRegistration"`
 	RepositoryRoot    string `json:"repositoryRoot"`
 	WorkflowDirectory string `json:"workflowDirectory"`
+	RunnerEnabled     bool   `json:"runnerEnabled"`
+	RunnerURL         string `json:"runnerUrl"`
+	RunnerToken       string `json:"runnerToken,omitempty"`
 	CaptchaEnabled    bool   `json:"captchaEnabled"`
 	CaptchaSiteKey    string `json:"captchaSiteKey"`
 	CaptchaSecret     string `json:"captchaSecret,omitempty"`
@@ -737,6 +747,12 @@ func (s *Store) Settings(ctx context.Context) (SiteSettings, error) {
 			settings.RepositoryRoot = value
 		case "workflow_directory":
 			settings.WorkflowDirectory = value
+		case "runner_enabled":
+			settings.RunnerEnabled = value == "true"
+		case "runner_url":
+			settings.RunnerURL = value
+		case "runner_token":
+			settings.RunnerToken = value
 		case "captcha_enabled":
 			settings.CaptchaEnabled = value == "true"
 		case "captcha_site_key":
@@ -771,7 +787,11 @@ func (s *Store) UpdateSettings(ctx context.Context, value SiteSettings) error {
 	if workflowDirectory == "" || workflowDirectory == "." || strings.Contains(workflowDirectory, "..") || strings.ContainsAny(workflowDirectory, `\\`) {
 		return fmt.Errorf("workflow directory must be a repository-relative path")
 	}
-	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "workflow_directory": "/" + workflowDirectory, "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom), "gravatar_mirror": strings.TrimSpace(value.GravatarMirror)}
+	runnerURL := strings.TrimRight(strings.TrimSpace(value.RunnerURL), "/")
+	if value.RunnerEnabled && runnerURL == "" {
+		return fmt.Errorf("runner URL is required when runner is enabled")
+	}
+	items := map[string]string{"site_title": strings.TrimSpace(value.Title), "site_description": strings.TrimSpace(value.Description), "allow_registration": fmt.Sprintf("%t", value.AllowRegistration), "repository_root": strings.TrimSpace(value.RepositoryRoot), "workflow_directory": "/" + workflowDirectory, "runner_enabled": fmt.Sprintf("%t", value.RunnerEnabled), "runner_url": runnerURL, "runner_token": strings.TrimSpace(value.RunnerToken), "captcha_enabled": fmt.Sprintf("%t", value.CaptchaEnabled), "captcha_site_key": strings.TrimSpace(value.CaptchaSiteKey), "captcha_secret": strings.TrimSpace(value.CaptchaSecret), "smtp_host": strings.TrimSpace(value.SMTPHost), "smtp_port": strings.TrimSpace(value.SMTPPort), "smtp_username": strings.TrimSpace(value.SMTPUsername), "smtp_password": strings.TrimSpace(value.SMTPPassword), "smtp_from": strings.TrimSpace(value.SMTPFrom), "gravatar_mirror": strings.TrimSpace(value.GravatarMirror)}
 	for key, item := range items {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO settings (key,value) VALUES (`+s.args(1, 2)+`) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, item); err != nil {
 			return err

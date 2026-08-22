@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -1085,6 +1086,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// Public site metadata must never expose SMTP or CAPTCHA credentials.
 	value.CaptchaSecret = ""
 	value.SMTPHost, value.SMTPPort, value.SMTPUsername, value.SMTPPassword, value.SMTPFrom = "", "", "", "", ""
+	value.RunnerURL, value.RunnerToken = "", ""
 	writeJSON(w, http.StatusOK, value)
 }
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -2292,36 +2294,54 @@ func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) (
 		run := repository.WorkflowRun{WorkflowID: workflow.ID, RepositoryName: repoName, Event: event, Status: "running", StartedAt: started}
 		var output strings.Builder
 		failed := false
-		parts := strings.SplitN(repoName, "/", 2)
-		work, workErr := os.MkdirTemp("", "kohame-workflow-")
-		if workErr == nil {
-			if len(parts) != 2 {
-				workErr = repository.ErrNotFound
-			} else if repo, repoErr := s.repos.Get(parts[0], parts[1]); repoErr != nil {
-				workErr = repoErr
-			} else if cloneOutput, cloneErr := exec.CommandContext(ctx, "git", "clone", "--quiet", repo.Path, work).CombinedOutput(); cloneErr != nil {
-				workErr = fmt.Errorf("clone repository: %w: %s", cloneErr, strings.TrimSpace(string(cloneOutput)))
-			}
-		}
-		if workErr != nil {
+		settings, settingsErr := s.forge.Settings(ctx)
+		if settingsErr != nil {
 			failed = true
-			output.WriteString(workErr.Error())
-		}
-		for _, step := range config.Steps {
-			if failed {
-				break
-			}
-			command := exec.CommandContext(ctx, "sh", "-c", step.Run)
-			command.Dir = work
-			value, runErr := command.CombinedOutput()
+			output.WriteString(settingsErr.Error())
+		} else if settings.RunnerEnabled {
+			value, runErr := s.executeOnRunner(ctx, settings, repoName, workflow.Name, event, config.Steps)
 			output.Write(value)
 			if runErr != nil {
 				failed = true
-				break
+				output.WriteString("\n" + runErr.Error())
 			}
-		}
-		if work != "" {
-			_ = os.RemoveAll(work)
+		} else {
+			parts := strings.SplitN(repoName, "/", 2)
+			work, workErr := os.MkdirTemp("", "kohame-workflow-")
+			if workErr == nil {
+				if len(parts) != 2 {
+					workErr = repository.ErrNotFound
+				} else if repo, repoErr := s.repos.Get(parts[0], parts[1]); repoErr != nil {
+					workErr = repoErr
+				} else if cloneOutput, cloneErr := exec.CommandContext(ctx, "git", "clone", "--quiet", repo.Path, work).CombinedOutput(); cloneErr != nil {
+					workErr = fmt.Errorf("clone repository: %w: %s", cloneErr, strings.TrimSpace(string(cloneOutput)))
+				}
+			}
+			if workErr != nil {
+				failed = true
+				output.WriteString(workErr.Error())
+			}
+			for _, step := range config.Steps {
+				if failed {
+					break
+				}
+				if strings.TrimSpace(step.Uses) != "" {
+					failed = true
+					output.WriteString("uses requires a configured remote runner")
+					break
+				}
+				command := exec.CommandContext(ctx, "sh", "-c", step.Run)
+				command.Dir = work
+				value, runErr := command.CombinedOutput()
+				output.Write(value)
+				if runErr != nil {
+					failed = true
+					break
+				}
+			}
+			if work != "" {
+				_ = os.RemoveAll(work)
+			}
 		}
 		status := "success"
 		if failed {
@@ -2339,6 +2359,59 @@ func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) (
 		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+type runnerExecuteRequest struct {
+	Event      string               `json:"event"`
+	Repository string               `json:"repository"`
+	Workflow   string               `json:"workflow"`
+	Workspace  []byte               `json:"workspace"`
+	Steps      []forge.WorkflowStep `json:"steps"`
+}
+
+type runnerExecuteResponse struct {
+	Status string `json:"status"`
+	Output string `json:"output"`
+}
+
+func (s *Server) executeOnRunner(ctx context.Context, settings forge.SiteSettings, repoName, workflowName, event string, steps []forge.WorkflowStep) ([]byte, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(settings.RunnerURL), "/") + "/v1/execute"
+	if parsed, err := url.Parse(endpoint); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, errors.New("runner URL is invalid")
+	}
+	repo, err := s.repos.GetFullName(repoName)
+	if err != nil {
+		return nil, err
+	}
+	archive, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "archive", "--format=tar", "HEAD").Output()
+	if err != nil {
+		return nil, fmt.Errorf("create workflow workspace: %w", err)
+	}
+	body, err := json.Marshal(runnerExecuteRequest{Event: event, Repository: repoName, Workflow: workflowName, Workspace: archive, Steps: steps})
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token := strings.TrimSpace(settings.RunnerToken); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := (&http.Client{Timeout: 30 * time.Minute}).Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("runner request failed: %w", err)
+	}
+	defer response.Body.Close()
+	var result runnerExecuteResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("invalid runner response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || result.Status == "failure" {
+		return []byte(result.Output), fmt.Errorf("runner execution failed")
+	}
+	return []byte(result.Output), nil
 }
 
 func (s *Server) loadWorkflows(ctx context.Context, repoName string) ([]repository.Workflow, error) {
@@ -2402,7 +2475,7 @@ func (s *Server) loadWorkflows(ctx context.Context, repoName string) ([]reposito
 func workflowSteps(steps []forge.WorkflowStep) []repository.WorkflowStep {
 	items := make([]repository.WorkflowStep, 0, len(steps))
 	for _, step := range steps {
-		items = append(items, repository.WorkflowStep{Name: step.Name, Run: step.Run})
+		items = append(items, repository.WorkflowStep{Name: step.Name, Run: step.Run, Uses: step.Uses, With: step.With})
 	}
 	return items
 }

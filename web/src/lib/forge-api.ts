@@ -18,5 +18,5 @@ export const when = (date: string) =>
 export const defaultSiteSettings: SiteSettings = {
   title: "Kohame", description: "简洁自托管的 Git 代码协作平台", allowRegistration: true,
   smtpHost: "", smtpPort: "587", smtpUsername: "", smtpPassword: "", smtpFrom: "",
-  captchaEnabled: false, captchaSiteKey: "", captchaSecret: "", repositoryRoot: "", workflowDirectory: "/.kohame/workflow", gravatarMirror: "https://www.gravatar.com/avatar/",
+  captchaEnabled: false, captchaSiteKey: "", captchaSecret: "", repositoryRoot: "", workflowDirectory: "/.kohame/workflow", runnerEnabled: false, runnerUrl: "", runnerToken: "", gravatarMirror: "https://www.gravatar.com/avatar/",
 }

@@ -71,8 +71,10 @@ type Workflow struct {
 	Steps          []WorkflowStep `json:"steps,omitempty"`
 }
 type WorkflowStep struct {
-	Name string `json:"name,omitempty"`
-	Run  string `json:"run"`
+	Name string            `json:"name,omitempty"`
+	Run  string            `json:"run,omitempty"`
+	Uses string            `json:"uses,omitempty"`
+	With map[string]string `json:"with,omitempty"`
 }
 type WorkflowRun struct {
 	ID             int64      `json:"id"`
@@ -692,7 +694,7 @@ func (s *Store) ListWorkflows(ctx context.Context, fullName string) ([]Workflow,
 		if parsed, parseErr := forge.ParseWorkflowDefinition(item.Config); parseErr == nil {
 			item.Events = parsed.On
 			for _, step := range parsed.Steps {
-				item.Steps = append(item.Steps, WorkflowStep{Name: step.Name, Run: step.Run})
+				item.Steps = append(item.Steps, WorkflowStep{Name: step.Name, Run: step.Run, Uses: step.Uses, With: step.With})
 			}
 		}
 		items = append(items, item)
@@ -715,8 +717,11 @@ func (s *Store) SaveWorkflow(ctx context.Context, fullName string, item Workflow
 		}
 	}
 	for _, step := range parsed.Steps {
-		if strings.TrimSpace(step.Run) == "" || len(step.Run) > 2000 {
-			return Workflow{}, errors.New("workflow steps must include run commands")
+		if strings.TrimSpace(step.Run) == "" && strings.TrimSpace(step.Uses) == "" {
+			return Workflow{}, errors.New("workflow steps must include run or uses")
+		}
+		if len(step.Run) > 2000 || len(step.Uses) > 500 {
+			return Workflow{}, errors.New("workflow step is too long")
 		}
 	}
 	now := time.Now().UTC()
@@ -749,7 +754,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, fullName string, item Workflow
 	item.Events = parsed.On
 	item.Steps = make([]WorkflowStep, 0, len(parsed.Steps))
 	for _, step := range parsed.Steps {
-		item.Steps = append(item.Steps, WorkflowStep{Name: step.Name, Run: step.Run})
+		item.Steps = append(item.Steps, WorkflowStep{Name: step.Name, Run: step.Run, Uses: step.Uses, With: step.With})
 	}
 	return item, nil
 }

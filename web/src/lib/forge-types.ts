@@ -27,7 +27,7 @@ export type Workflow = {
   updatedAt: string
   path?: string
   events?: string[]
-  steps?: { name?: string; run: string }[]
+  steps?: { name?: string; run?: string; uses?: string; with?: Record<string, string> }[]
 }
 export type WorkflowRun = {
   id: number
@@ -53,6 +53,9 @@ export type SiteSettings = {
   captchaSecret: string
   repositoryRoot: string
   workflowDirectory: string
+  runnerEnabled: boolean
+  runnerUrl: string
+  runnerToken: string
   gravatarMirror: string
 }
 export type Repository = {

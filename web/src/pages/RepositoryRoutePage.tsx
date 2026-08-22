@@ -1737,6 +1737,7 @@ function WorkflowWorkspace({
   const [steps, setSteps] = useState<{ name: string; run: string }[]>([
     { name: "Build", run: "echo hello" },
   ])
+  const [actionSteps, setActionSteps] = useState<Record<number, string>>({})
   const [enabled, setEnabled] = useState(true)
   const [message, setMessage] = useState("")
   const eventOptions = [
@@ -1764,6 +1765,7 @@ function WorkflowWorkspace({
     setWorkflowName("")
     setEvents(["push", "workflow_dispatch"])
     setSteps([{ name: "Build", run: "echo hello" }])
+    setActionSteps({})
     setEnabled(true)
   }
   const yamlString = () => {
@@ -1773,12 +1775,16 @@ function WorkflowWorkspace({
     lines.push("jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps:")
     steps.forEach((step, index) => {
       lines.push(`      - name: ${quote(step.name.trim() || `Step ${index + 1}`)}`)
-      lines.push(`        run: ${quote(step.run)}`)
+      if (actionSteps[index]?.trim()) {
+        lines.push(`        uses: ${quote(actionSteps[index].trim())}`)
+      } else {
+        lines.push(`        run: ${quote(step.run)}`)
+      }
     })
     return lines.join("\n") + "\n"
   }
   const save = async () => {
-    if (!workflowName.trim() || !events.length || !steps.some((step) => step.run.trim())) {
+    if (!workflowName.trim() || !events.length || !steps.some((step) => step.run.trim() || actionSteps[steps.indexOf(step)]?.trim())) {
       setMessage("请填写名称、至少一个触发事件和一个步骤。")
       return
     }
@@ -1804,7 +1810,8 @@ function WorkflowWorkspace({
     setWorkflowID(item.id)
     setWorkflowName(item.name)
     setEvents(item.events?.length ? item.events : ["push", "workflow_dispatch"])
-    setSteps(item.steps?.length ? item.steps.map((step, index) => ({ name: step.name || `Step ${index + 1}`, run: step.run })) : [{ name: "Build", run: "" }])
+    setSteps(item.steps?.length ? item.steps.map((step, index) => ({ name: step.name || `Step ${index + 1}`, run: step.run || "" })) : [{ name: "Build", run: "" }])
+    setActionSteps(Object.fromEntries((item.steps || []).map((step, index) => [index, step.uses || ""])))
     setEnabled(item.enabled)
     setMessage("")
   }
@@ -1875,7 +1882,7 @@ function WorkflowWorkspace({
             {steps.map((step, index) => (
               <div key={index} className="grid gap-2 sm:grid-cols-[160px_1fr_auto]">
                 <Field label="名称" value={step.name} onChange={(value) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, name: value } : entry))} placeholder={`Step ${index + 1}`} />
-                <label className="block text-sm font-medium">Shell 命令<textarea value={step.run} onChange={(event) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, run: event.target.value } : entry))} className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700" /></label>
+                <div className="space-y-2"><label className="block text-sm font-medium">Shell 命令<textarea value={step.run} onChange={(event) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, run: event.target.value } : entry))} className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700" /></label><Field label="或引用 Action (uses)" value={actionSteps[index] || ""} onChange={(value) => setActionSteps({ ...actionSteps, [index]: value })} placeholder="actions/checkout@v4" /></div>
                 <Button variant="ghost" aria-label="删除步骤" onPress={() => setSteps(steps.filter((_, stepIndex) => stepIndex !== index))}><Trash2 /></Button>
               </div>
             ))}
