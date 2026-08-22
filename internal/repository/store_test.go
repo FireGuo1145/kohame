@@ -14,7 +14,11 @@ import (
 func TestRenameMovesRepositoryAndSettings(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	gormDB, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.SQLDB(gormDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +63,11 @@ func TestRenameMovesRepositoryAndSettings(t *testing.T) {
 func TestInitializeCreatesReadmeAndDetectableLicense(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	gormDB, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.SQLDB(gormDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +93,11 @@ func TestInitializeCreatesReadmeAndDetectableLicense(t *testing.T) {
 func TestMergePullRequestBranch(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	gormDB, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.SQLDB(gormDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +133,11 @@ func TestMergePullRequestBranch(t *testing.T) {
 func TestWikiPagesPersistAcrossRename(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	db, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	gormDB, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.SQLDB(gormDB)
 	if err != nil {
 		t.Fatal(err)
 	}

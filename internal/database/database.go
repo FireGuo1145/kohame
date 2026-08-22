@@ -9,24 +9,35 @@ import (
 
 	"kohame/internal/config"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
-	driver := cfg.Driver
-	if driver == "pgsql" {
-		driver = "pgx"
-	} else if err := os.MkdirAll(filepath.Dir(cfg.DSN), 0o755); err != nil {
-		return nil, fmt.Errorf("create database directory: %w", err)
+func Open(cfg config.DatabaseConfig) (*gorm.DB, error) {
+	if cfg.Driver != "pgsql" {
+		if err := os.MkdirAll(filepath.Dir(cfg.DSN), 0o755); err != nil {
+			return nil, fmt.Errorf("create database directory: %w", err)
+		}
 	}
 
-	db, err := sql.Open(driver, cfg.DSN)
+	var dialector gorm.Dialector
+	if cfg.Driver == "pgsql" {
+		dialector = postgres.Open(cfg.DSN)
+	} else {
+		dialector = sqlite.Open(cfg.DSN)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := db.Ping(); err != nil {
-		db.Close()
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("open database connection: %w", err)
+	}
+	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	idColumn := "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -64,19 +75,19 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS wiki_page_revisions (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, slug VARCHAR(80) NOT NULL, title VARCHAR(160) NOT NULL, content TEXT NOT NULL, author VARCHAR(80) NOT NULL, edited_at TIMESTAMP NOT NULL)`,
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			db.Close()
+		if err := db.Exec(statement).Error; err != nil {
+			_ = sqlDB.Close()
 			return nil, fmt.Errorf("migrate database: %w", err)
 		}
 	}
 	// A compact forward migration for installations created before email verification.
 	// Both databases report a harmless duplicate-column error when it already exists.
-	if _, err := db.Exec(`ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE`); err != nil && !isDuplicateColumn(err) {
-		db.Close()
+	if err := db.Exec(`ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE`).Error; err != nil && !isDuplicateColumn(err) {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate users: %w", err)
 	}
-	if _, err := db.Exec(`ALTER TABLE user_settings ADD COLUMN avatar_url VARCHAR(255) NOT NULL DEFAULT ''`); err != nil && !isDuplicateColumn(err) {
-		db.Close()
+	if err := db.Exec(`ALTER TABLE user_settings ADD COLUMN avatar_url VARCHAR(255) NOT NULL DEFAULT ''`).Error; err != nil && !isDuplicateColumn(err) {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate user settings: %w", err)
 	}
 	for _, statement := range []string{
@@ -89,21 +100,21 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		`ALTER TABLE repository_settings ADD COLUMN allow_forks BOOLEAN NOT NULL DEFAULT TRUE`,
 		`ALTER TABLE repository_settings ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE`,
 	} {
-		if _, err := db.Exec(statement); err != nil && !isDuplicateColumn(err) {
-			db.Close()
+		if err := db.Exec(statement).Error; err != nil && !isDuplicateColumn(err) {
+			_ = sqlDB.Close()
 			return nil, fmt.Errorf("migrate repository settings: %w", err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_title', 'Kohame') ON CONFLICT (key) DO NOTHING`); err != nil {
-		db.Close()
+	if err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_title', 'Kohame') ON CONFLICT (key) DO NOTHING`).Error; err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
-	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_description', '简洁自托管的 Git 代码协作平台') ON CONFLICT (key) DO NOTHING`); err != nil {
-		db.Close()
+	if err := db.Exec(`INSERT INTO settings (key, value) VALUES ('site_description', '简洁自托管的 Git 代码协作平台') ON CONFLICT (key) DO NOTHING`).Error; err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
-	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('allow_registration', 'true') ON CONFLICT (key) DO NOTHING`); err != nil {
-		db.Close()
+	if err := db.Exec(`INSERT INTO settings (key, value) VALUES ('allow_registration', 'true') ON CONFLICT (key) DO NOTHING`).Error; err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("seed settings: %w", err)
 	}
 	for key, value := range map[string]string{"repository_root": "data/repos", "captcha_enabled": "false", "captcha_site_key": "", "captcha_secret": "", "gravatar_mirror": "https://www.gravatar.com/avatar/"} {
@@ -111,13 +122,16 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		if cfg.Driver == "pgsql" {
 			seed = `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`
 		}
-		if _, err := db.Exec(seed, key, value); err != nil {
-			db.Close()
+		if err := db.Exec(seed, key, value).Error; err != nil {
+			_ = sqlDB.Close()
 			return nil, fmt.Errorf("seed settings: %w", err)
 		}
 	}
 	return db, nil
 }
+
+// SQLDB exposes the connection for repositories that retain parameterized raw SQL.
+func SQLDB(db *gorm.DB) (*sql.DB, error) { return db.DB() }
 
 func isDuplicateColumn(err error) bool {
 	message := strings.ToLower(err.Error())

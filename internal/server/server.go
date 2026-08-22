@@ -45,7 +45,11 @@ func New(cfg config.Config) (*Server, error) {
 	if err := os.MkdirAll(cfg.Storage.RepositoryRoot, 0o755); err != nil {
 		return nil, err
 	}
-	db, err := database.Open(cfg.Database)
+	gormDB, err := database.Open(cfg.Database)
+	if err != nil {
+		return nil, err
+	}
+	db, err := database.SQLDB(gormDB)
 	if err != nil {
 		return nil, err
 	}
