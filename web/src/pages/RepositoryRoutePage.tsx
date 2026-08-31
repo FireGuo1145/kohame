@@ -1741,6 +1741,8 @@ function WorkflowWorkspace({
   const [actionSteps, setActionSteps] = useState<Record<number, string>>({})
   const [enabled, setEnabled] = useState(true)
   const [message, setMessage] = useState("")
+  const [workflowFilter, setWorkflowFilter] = useState("all")
+  const [runFilter, setRunFilter] = useState("")
   const eventOptions = [
     ["push", "推送"],
     ["issues", "议题"],
@@ -1862,235 +1864,309 @@ function WorkflowWorkspace({
     }
   }
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">工作流</h2>
-          <p className="mt-1 text-sm text-zinc-500">
-            使用 GitHub Actions
-            格式定义触发事件和步骤，文件保存在站点设置指定的目录中。
-          </p>
-        </div>
-        {user && (
-          <Button onPress={() => void run()}>
-            <GitBranch />
-            手动运行
-          </Button>
-        )}
-      </div>
-      {message && (
-        <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
-          {message}
+    <div className="grid gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">
+      <aside className="h-fit border-b border-zinc-200 pb-4 lg:border-r lg:border-b-0 lg:pr-5 dark:border-zinc-800">
+        <p className="px-2 pb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+          Actions
         </p>
-      )}{" "}
-      {user && (
-        <section className="space-y-4 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-          <Field
-            label={workflowID ? "编辑工作流" : "新建工作流"}
-            value={workflowName}
-            onChange={setWorkflowName}
-            placeholder="build"
-          />
+        <button
+          onClick={() => setWorkflowFilter("all")}
+          className={`flex w-full items-center rounded-md px-3 py-2 text-left text-sm ${workflowFilter === "all" ? "bg-zinc-900 font-medium text-white dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"}`}
+        >
+          全部工作流
+        </button>
+        {items.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setWorkflowFilter(item.name)}
+            className={`mt-1 flex w-full items-center truncate rounded-md px-3 py-2 text-left text-sm ${workflowFilter === item.name ? "bg-zinc-900 font-medium text-white dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"}`}
+          >
+            {item.name}
+          </button>
+        ))}
+        <div className="mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+          <p className="px-2 pb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+            管理
+          </p>
+          <span className="block px-3 py-2 text-sm text-zinc-500">
+            运行记录
+          </span>
+          <span className="block px-3 py-2 text-sm text-zinc-500">
+            缓存（即将推出）
+          </span>
+        </div>
+      </aside>
+      <div className="min-w-0 space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="mb-2 text-sm font-medium">触发事件</p>
-            <div className="flex flex-wrap gap-2">
-              {eventOptions.map(([event, label]) => (
-                <label
-                  key={event}
-                  className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
-                >
-                  <input
-                    type="checkbox"
-                    checked={events.includes(event)}
-                    onChange={() =>
-                      setEvents(
-                        events.includes(event)
-                          ? events.filter((value) => value !== event)
-                          : [...events, event]
-                      )
-                    }
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
+            <h2 className="text-xl font-semibold">工作流</h2>
+            <p className="mt-1 text-sm text-zinc-500">
+              使用 GitHub Actions
+              格式定义触发事件和步骤，文件保存在站点设置指定的目录中。
+            </p>
           </div>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium">步骤</p>
-              <Button
-                variant="outline"
-                size="sm"
-                onPress={() =>
-                  setSteps([
-                    ...steps,
-                    { name: `Step ${steps.length + 1}`, run: "" },
-                  ])
-                }
-              >
-                <Plus />
-                添加步骤
-              </Button>
-            </div>
-            {steps.map((step, index) => (
-              <div
-                key={index}
-                className="grid gap-2 sm:grid-cols-[160px_1fr_auto]"
-              >
-                <Field
-                  label="名称"
-                  value={step.name}
-                  onChange={(value) =>
-                    setSteps(
-                      steps.map((entry, stepIndex) =>
-                        stepIndex === index ? { ...entry, name: value } : entry
-                      )
-                    )
-                  }
-                  placeholder={`Step ${index + 1}`}
-                />
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium">
-                    Shell 命令
-                    <textarea
-                      value={step.run}
-                      onChange={(event) =>
-                        setSteps(
-                          steps.map((entry, stepIndex) =>
-                            stepIndex === index
-                              ? { ...entry, run: event.target.value }
-                              : entry
-                          )
+          {user && (
+            <Button onPress={() => void run()}>
+              <GitBranch />
+              手动运行
+            </Button>
+          )}
+        </div>
+        {message && (
+          <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
+            {message}
+          </p>
+        )}{" "}
+        {user && (
+          <section className="space-y-4 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+            <Field
+              label={workflowID ? "编辑工作流" : "新建工作流"}
+              value={workflowName}
+              onChange={setWorkflowName}
+              placeholder="build"
+            />
+            <div>
+              <p className="mb-2 text-sm font-medium">触发事件</p>
+              <div className="flex flex-wrap gap-2">
+                {eventOptions.map(([event, label]) => (
+                  <label
+                    key={event}
+                    className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={events.includes(event)}
+                      onChange={() =>
+                        setEvents(
+                          events.includes(event)
+                            ? events.filter((value) => value !== event)
+                            : [...events, event]
                         )
                       }
-                      className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700"
                     />
+                    {label}
                   </label>
-                  <Field
-                    label="或引用 Action (uses)"
-                    value={actionSteps[index] || ""}
-                    onChange={(value) =>
-                      setActionSteps({ ...actionSteps, [index]: value })
-                    }
-                    placeholder="actions/checkout@v4"
-                  />
-                </div>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">步骤</p>
                 <Button
-                  variant="ghost"
-                  aria-label="删除步骤"
+                  variant="outline"
+                  size="sm"
                   onPress={() =>
-                    setSteps(
-                      steps.filter((_, stepIndex) => stepIndex !== index)
-                    )
+                    setSteps([
+                      ...steps,
+                      { name: `Step ${steps.length + 1}`, run: "" },
+                    ])
                   }
                 >
-                  <Trash2 />
+                  <Plus />
+                  添加步骤
                 </Button>
               </div>
-            ))}
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(event) => setEnabled(event.target.checked)}
-            />
-            启用工作流
-          </label>
-          <div className="flex gap-2">
-            <Button
-              onPress={() => void save()}
-              isDisabled={!workflowName.trim()}
-            >
-              <Plus />
-              {workflowID ? "保存修改" : "新建工作流"}
-            </Button>
-            {workflowID > 0 && (
-              <Button variant="outline" onPress={reset}>
-                取消编辑
-              </Button>
-            )}
-          </div>
-        </section>
-      )}
-      <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <h3 className="border-b border-zinc-100 px-5 py-4 font-semibold dark:border-zinc-800">
-          已配置工作流
-        </h3>
-        {items.length ? (
-          items.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center gap-3 border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
-            >
-              <div className="min-w-0 flex-1">
-                <strong>{item.name}</strong>
-                <span className="ml-2 text-xs text-zinc-500">
-                  {item.enabled ? "已启用" : "已停用"}
-                </span>
-                <span className="ml-2 block truncate text-xs text-zinc-400">
-                  {item.path}
-                </span>
-              </div>
-              {user && (
-                <>
+              {steps.map((step, index) => (
+                <div
+                  key={index}
+                  className="grid gap-2 sm:grid-cols-[160px_1fr_auto]"
+                >
+                  <Field
+                    label="名称"
+                    value={step.name}
+                    onChange={(value) =>
+                      setSteps(
+                        steps.map((entry, stepIndex) =>
+                          stepIndex === index
+                            ? { ...entry, name: value }
+                            : entry
+                        )
+                      )
+                    }
+                    placeholder={`Step ${index + 1}`}
+                  />
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium">
+                      Shell 命令
+                      <textarea
+                        value={step.run}
+                        onChange={(event) =>
+                          setSteps(
+                            steps.map((entry, stepIndex) =>
+                              stepIndex === index
+                                ? { ...entry, run: event.target.value }
+                                : entry
+                            )
+                          )
+                        }
+                        className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700"
+                      />
+                    </label>
+                    <Field
+                      label="或引用 Action (uses)"
+                      value={actionSteps[index] || ""}
+                      onChange={(value) =>
+                        setActionSteps({ ...actionSteps, [index]: value })
+                      }
+                      placeholder="actions/checkout@v4"
+                    />
+                  </div>
                   <Button
                     variant="ghost"
-                    aria-label={`编辑 ${item.name}`}
-                    onPress={() => edit(item)}
+                    aria-label="删除步骤"
+                    onPress={() =>
+                      setSteps(
+                        steps.filter((_, stepIndex) => stepIndex !== index)
+                      )
+                    }
                   >
-                    <Pencil />
+                    <Trash2 />
                   </Button>
-                  {item.id > 0 && (
+                </div>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(event) => setEnabled(event.target.checked)}
+              />
+              启用工作流
+            </label>
+            <div className="flex gap-2">
+              <Button
+                onPress={() => void save()}
+                isDisabled={!workflowName.trim()}
+              >
+                <Plus />
+                {workflowID ? "保存修改" : "新建工作流"}
+              </Button>
+              {workflowID > 0 && (
+                <Button variant="outline" onPress={reset}>
+                  取消编辑
+                </Button>
+              )}
+            </div>
+          </section>
+        )}
+        <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          <h3 className="border-b border-zinc-100 px-5 py-4 font-semibold dark:border-zinc-800">
+            已配置工作流
+          </h3>
+          {items.length ? (
+            items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center gap-3 border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
+              >
+                <div className="min-w-0 flex-1">
+                  <strong>{item.name}</strong>
+                  <span className="ml-2 text-xs text-zinc-500">
+                    {item.enabled ? "已启用" : "已停用"}
+                  </span>
+                  <span className="ml-2 block truncate text-xs text-zinc-400">
+                    {item.path}
+                  </span>
+                </div>
+                {user && (
+                  <>
                     <Button
                       variant="ghost"
-                      aria-label={`删除 ${item.name}`}
-                      onPress={() => void remove(item)}
+                      aria-label={`编辑 ${item.name}`}
+                      onPress={() => edit(item)}
                     >
-                      <Trash2 />
+                      <Pencil />
                     </Button>
-                  )}
-                </>
-              )}
-            </div>
-          ))
-        ) : (
-          <p className="p-6 text-sm text-zinc-500">暂无工作流。</p>
-        )}
-      </section>
-      <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <h3 className="border-b border-zinc-100 px-5 py-4 font-semibold dark:border-zinc-800">
-          运行记录
-        </h3>
-        {runs.length ? (
-          runs.map((item) => (
-            <div
-              key={item.id}
-              className="border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
-            >
-              <div className="flex justify-between">
-                <strong>{item.event}</strong>
-                <span
-                  className={
-                    item.status === "success"
-                      ? "text-emerald-600"
-                      : "text-red-600"
-                  }
-                >
-                  {item.status}
-                </span>
+                    {item.id > 0 && (
+                      <Button
+                        variant="ghost"
+                        aria-label={`删除 ${item.name}`}
+                        onPress={() => void remove(item)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    )}
+                  </>
+                )}
               </div>
-              {item.output && (
-                <pre className="mt-2 max-h-32 overflow-auto rounded bg-zinc-950 p-2 text-xs text-zinc-200">
-                  {item.output}
-                </pre>
-              )}
-            </div>
-          ))
-        ) : (
-          <p className="p-6 text-sm text-zinc-500">暂无运行记录。</p>
-        )}
-      </section>
+            ))
+          ) : (
+            <p className="p-6 text-sm text-zinc-500">暂无工作流。</p>
+          )}
+        </section>
+        <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          <h3 className="border-b border-zinc-100 px-5 py-4 font-semibold dark:border-zinc-800">
+            运行记录
+          </h3>
+          <div className="border-b border-zinc-100 p-3 dark:border-zinc-800">
+            <input
+              value={runFilter}
+              onChange={(event) => setRunFilter(event.target.value)}
+              placeholder="筛选工作流运行记录"
+              className="h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 text-sm dark:border-zinc-700"
+            />
+          </div>
+          {runs.filter(
+            (item) =>
+              (workflowFilter === "all" ||
+                items.find((workflow) => workflow.id === item.workflowId)
+                  ?.name === workflowFilter) &&
+              (!runFilter || `${item.event} ${item.status}`.includes(runFilter))
+          ).length ? (
+            runs
+              .filter(
+                (item) =>
+                  (workflowFilter === "all" ||
+                    items.find((workflow) => workflow.id === item.workflowId)
+                      ?.name === workflowFilter) &&
+                  (!runFilter ||
+                    `${item.event} ${item.status}`.includes(runFilter))
+              )
+              .map((item) => (
+                <div
+                  key={item.id}
+                  className="border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
+                >
+                  <div className="flex justify-between">
+                    <strong>
+                      {item.event === "workflow_dispatch"
+                        ? "手动运行"
+                        : item.event === "pull_request"
+                          ? "拉取请求"
+                          : item.event === "issues"
+                            ? "议题"
+                            : item.event === "release"
+                              ? "发布"
+                              : "推送"}
+                    </strong>
+                    <span
+                      className={
+                        item.status === "success"
+                          ? "text-emerald-600"
+                          : "text-red-600"
+                      }
+                    >
+                      {item.status === "success"
+                        ? "成功"
+                        : item.status === "failure"
+                          ? "失败"
+                          : item.status === "queued"
+                            ? "排队中"
+                            : "运行中"}
+                    </span>
+                  </div>
+                  {item.output && (
+                    <pre className="mt-2 max-h-32 overflow-auto rounded bg-zinc-950 p-2 text-xs text-zinc-200">
+                      {item.output}
+                    </pre>
+                  )}
+                </div>
+              ))
+          ) : (
+            <p className="p-6 text-sm text-zinc-500">暂无运行记录。</p>
+          )}
+        </section>
+      </div>
     </div>
   )
 }
@@ -4694,6 +4770,10 @@ function WorkList<T extends { id: number }>({
   const [stateFilter, setStateFilter] = useState("all")
   const [filter, setFilter] = useState("")
   const [labelFilter, setLabelFilter] = useState("")
+  const [issueView, setIssueView] = useState<
+    "all" | "assigned" | "created" | "mentioned" | "recent"
+  >("all")
+  const isIssues = title === "议题"
   const labels = Array.from(
     new Map(
       items.flatMap((item) =>
@@ -4710,6 +4790,7 @@ function WorkList<T extends { id: number }>({
       author?: string
       state?: string
       labels?: Label[]
+      assignees?: string[]
     }
     const needle = filter.trim().toLowerCase()
     return (
@@ -4719,10 +4800,22 @@ function WorkList<T extends { id: number }>({
           .includes(needle)) &&
       (stateFilter === "all" || value.state === stateFilter) &&
       (!labelFilter ||
-        value.labels?.some((label) => String(label.id) === labelFilter))
+        value.labels?.some((label) => String(label.id) === labelFilter)) &&
+      (!isIssues ||
+        issueView === "all" ||
+        issueView === "recent" ||
+        (issueView === "assigned" &&
+          !!user &&
+          value.assignees?.includes(user.username)) ||
+        (issueView === "created" && !!user && value.author === user.username) ||
+        (issueView === "mentioned" &&
+          !!user &&
+          `${value.title || ""} ${value.body || ""}`.includes(
+            `@${user.username}`
+          )))
     )
   })
-  return (
+  const content = (
     <>
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold">{title}</h2>
@@ -4751,8 +4844,12 @@ function WorkList<T extends { id: number }>({
                   : field === "targetBranch"
                     ? "Target branch"
                     : field === "tagName"
-                      ? "Tag"
-                      : field[0].toUpperCase() + field.slice(1)}
+                      ? "标签"
+                      : field === "title"
+                        ? "标题"
+                        : field === "body"
+                          ? "描述"
+                          : field}
                 {field === "body" || field === "notes" ? (
                   <textarea
                     required={field === "body"}
@@ -4775,7 +4872,7 @@ function WorkList<T extends { id: number }>({
               </label>
             ))}
             <Button type="submit" className="w-fit">
-              Save
+              保存
             </Button>
           </form>
         </Modal>
@@ -4845,7 +4942,7 @@ function WorkList<T extends { id: number }>({
                         )
                       }}
                     >
-                      Edit status
+                      修改状态
                     </Button>
                   )}
                   {onDelete && (
@@ -4854,7 +4951,7 @@ function WorkList<T extends { id: number }>({
                       size="xs"
                       onPress={() => setDeleting(item.id)}
                     >
-                      Delete
+                      删除
                     </Button>
                   )}
                 </div>
@@ -4872,18 +4969,18 @@ function WorkList<T extends { id: number }>({
         )}
       </div>
       {editing !== null && (
-        <Modal title="Edit status" onClose={() => setEditing(null)}>
+        <Modal title="修改状态" onClose={() => setEditing(null)}>
           <div className="space-y-4">
             <label className="block text-sm font-medium">
-              Status
+              状态
               <select
                 value={state}
                 onChange={(event) => setState(event.target.value)}
                 className="mt-1 block h-10 w-full rounded-xl border border-zinc-200 bg-transparent px-3 dark:border-zinc-700"
               >
-                <option value="open">Open</option>
-                <option value="closed">Closed</option>
-                <option value="merged">Merged</option>
+                <option value="open">开启</option>
+                <option value="closed">已关闭</option>
+                <option value="merged">已合并</option>
               </select>
             </label>
             <Button
@@ -4892,22 +4989,20 @@ function WorkList<T extends { id: number }>({
                 setEditing(null)
               }}
             >
-              Save changes
+              保存更改
             </Button>
           </div>
         </Modal>
       )}
       {deleting !== null && (
         <Modal
-          title={`Delete ${title.slice(0, -1)}`}
+          title={`删除${title.slice(0, -1)}`}
           onClose={() => setDeleting(null)}
         >
-          <p className="text-sm text-zinc-500">
-            This action permanently removes the item.
-          </p>
+          <p className="text-sm text-zinc-500">此操作会永久删除此条内容。</p>
           <div className="mt-5 flex justify-end gap-2">
             <Button variant="outline" onPress={() => setDeleting(null)}>
-              Cancel
+              取消
             </Button>
             <Button
               variant="destructive"
@@ -4916,12 +5011,56 @@ function WorkList<T extends { id: number }>({
                 setDeleting(null)
               }}
             >
-              Delete
+              删除
             </Button>
           </div>
         </Modal>
       )}
     </>
+  )
+  if (!isIssues) return content
+  return (
+    <div className="grid gap-6 lg:grid-cols-[190px_minmax(0,1fr)]">
+      <aside className="h-fit border-b border-zinc-200 pb-4 lg:border-r lg:border-b-0 lg:pr-5 dark:border-zinc-800">
+        <p className="px-2 pb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+          议题
+        </p>
+        {(
+          [
+            ["all", "全部议题"],
+            ["assigned", "分配给我"],
+            ["created", "我创建的"],
+            ["mentioned", "提及我的"],
+            ["recent", "最近活动"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            onClick={() => setIssueView(value)}
+            className={`flex w-full items-center rounded-md px-3 py-2 text-left text-sm ${issueView === value ? "bg-zinc-900 font-medium text-white dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"}`}
+          >
+            {label}
+            {value === "all" && (
+              <span className="ml-auto text-xs text-zinc-400">
+                {items.length}
+              </span>
+            )}
+          </button>
+        ))}
+        <div className="mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+          <p className="px-2 pb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+            规划
+          </p>
+          <button className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900">
+            里程碑
+          </button>
+          <button className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900">
+            标签
+          </button>
+        </div>
+      </aside>
+      <div>{content}</div>
+    </div>
   )
 }
 

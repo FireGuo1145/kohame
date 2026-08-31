@@ -140,6 +140,15 @@ export type Issue = {
   author: string
   createdAt: string
   labels: Label[]
+  assignees?: string[]
+}
+export type Milestone = {
+  id: number
+  title: string
+  description: string
+  dueAt?: string
+  state: "open" | "closed"
+  createdAt: string
 }
 export type IssueComment = {
   id: number
