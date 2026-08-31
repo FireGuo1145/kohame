@@ -239,6 +239,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/labels/{id}", s.updateLabel)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/labels/{id}", s.deleteLabel)
 	mux.HandleFunc("PUT /api/repos/{scope}/{name}/issues/{id}/labels", s.setIssueLabels)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/issues/{id}/assignees", s.setIssueAssignees)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/milestones", s.milestones)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/milestones", s.saveMilestone)
+	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/milestones/{id}", s.saveMilestone)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/issues/{id}", s.issue)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/issues/{id}", s.updateIssue)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/issues/{id}", s.deleteIssue)
@@ -1351,6 +1355,71 @@ func (s *Server) setIssueLabels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "无法更新议题标签。")
 	} else {
 		w.WriteHeader(204)
+	}
+}
+func (s *Server) setIssueAssignees(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.requireRepositoryWrite(w, r, user) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Usernames []string `json:"usernames"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.forge.SetIssueAssignees(r.Context(), repoKey(r), id, input.Usernames); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Issue not found.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		w.WriteHeader(204)
+	}
+}
+func (s *Server) milestones(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.Milestones(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "Could not load milestones.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) saveMilestone(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.canManageRepository(r, user) {
+		return
+	}
+	var input forge.Milestone
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if r.Method == http.MethodPatch {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		input.ID = id
+	}
+	item, err := s.forge.SaveMilestone(r.Context(), repoKey(r), input)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Milestone not found.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 200, item)
 	}
 }
 func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {

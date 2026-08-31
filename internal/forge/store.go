@@ -185,6 +185,15 @@ type Issue struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Labels    []Label   `json:"labels"`
+	Assignees []string  `json:"assignees"`
+}
+type Milestone struct {
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	DueAt       *time.Time `json:"dueAt,omitempty"`
+	State       string     `json:"state"`
+	CreatedAt   time.Time  `json:"createdAt"`
 }
 type Label struct {
 	ID          int64  `json:"id"`
@@ -843,6 +852,7 @@ func (s *Store) ListIssues(ctx context.Context, repo string) ([]Issue, error) {
 	}
 	for index := range out {
 		out[index].Labels, _ = s.IssueLabels(ctx, out[index].ID)
+		out[index].Assignees, _ = s.IssueAssignees(ctx, repo, out[index].ID)
 	}
 	return out, rows.Err()
 }
@@ -867,6 +877,7 @@ func (s *Store) Issue(ctx context.Context, repo string, id int64) (Issue, error)
 	}
 	if err == nil {
 		item.Labels, _ = s.IssueLabels(ctx, item.ID)
+		item.Assignees, _ = s.IssueAssignees(ctx, repo, item.ID)
 	}
 	return item, err
 }
@@ -971,6 +982,93 @@ func (s *Store) SetIssueLabels(ctx context.Context, repo string, issueID int64, 
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) IssueAssignees(ctx context.Context, repo string, issueID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.username FROM issue_assignees a JOIN users u ON u.id=a.user_id JOIN issues i ON i.id=a.issue_id WHERE i.repository_name=`+s.arg(1)+` AND a.issue_id=`+s.arg(2)+` ORDER BY u.username`, repo, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var username string
+		if err := rows.Scan(&username); err != nil {
+			return nil, err
+		}
+		items = append(items, username)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) SetIssueAssignees(ctx context.Context, repo string, issueID int64, usernames []string) error {
+	if _, err := s.Issue(ctx, repo, issueID); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_assignees WHERE issue_id=`+s.arg(1), issueID); err != nil {
+		return err
+	}
+	for _, username := range usernames {
+		var userID int64
+		err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE username=`+s.arg(1), strings.ToLower(strings.TrimSpace(username))).Scan(&userID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("assignee not found")
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO issue_assignees (issue_id,user_id) VALUES (`+s.args(1, 2)+`) ON CONFLICT(issue_id,user_id) DO NOTHING`, issueID, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) Milestones(ctx context.Context, repo string) ([]Milestone, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,title,description,due_at,state,created_at FROM milestones WHERE repository_name=`+s.arg(1)+` ORDER BY state,due_at,title`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Milestone{}
+	for rows.Next() {
+		var item Milestone
+		if err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.DueAt, &item.State, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) SaveMilestone(ctx context.Context, repo string, item Milestone) (Milestone, error) {
+	item.Title = strings.TrimSpace(item.Title)
+	if item.Title == "" || (item.State != "" && item.State != "open" && item.State != "closed") {
+		return Milestone{}, errors.New("invalid milestone")
+	}
+	if item.State == "" {
+		item.State = "open"
+	}
+	now := time.Now().UTC()
+	if item.ID == 0 {
+		id, err := s.insertID(ctx, `INSERT INTO milestones (repository_name,title,description,due_at,state,created_at) VALUES (`+s.args(1, 2, 3, 4, 5, 6)+`)`, repo, item.Title, strings.TrimSpace(item.Description), item.DueAt, item.State, now)
+		item.ID = id
+		item.CreatedAt = now
+		return item, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE milestones SET title=`+s.arg(1)+`,description=`+s.arg(2)+`,due_at=`+s.arg(3)+`,state=`+s.arg(4)+` WHERE id=`+s.arg(5)+` AND repository_name=`+s.arg(6), item.Title, strings.TrimSpace(item.Description), item.DueAt, item.State, item.ID, repo)
+	if err != nil {
+		return item, err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return item, ErrNotFound
+	}
+	return item, nil
 }
 func (s *Store) ListIssueComments(ctx context.Context, repo string, issueID int64) ([]IssueComment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id,u.username,c.body,c.created_at FROM issue_comments c JOIN users u ON u.id=c.author_id WHERE c.repository_name=`+s.arg(1)+` AND c.issue_id=`+s.arg(2)+` ORDER BY c.created_at ASC`, repo, issueID)
