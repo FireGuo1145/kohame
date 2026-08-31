@@ -54,6 +54,7 @@ import type {
   ProtectedBranch,
   PullRequest,
   PullRequestComment,
+  PullRequestReview,
   Release,
   Repository,
   RepositorySettings,
@@ -1774,7 +1775,9 @@ function WorkflowWorkspace({
     events.forEach((event) => lines.push(`  - ${event}`))
     lines.push("jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps:")
     steps.forEach((step, index) => {
-      lines.push(`      - name: ${quote(step.name.trim() || `Step ${index + 1}`)}`)
+      lines.push(
+        `      - name: ${quote(step.name.trim() || `Step ${index + 1}`)}`
+      )
       if (actionSteps[index]?.trim()) {
         lines.push(`        uses: ${quote(actionSteps[index].trim())}`)
       } else {
@@ -1784,7 +1787,13 @@ function WorkflowWorkspace({
     return lines.join("\n") + "\n"
   }
   const save = async () => {
-    if (!workflowName.trim() || !events.length || !steps.some((step) => step.run.trim() || actionSteps[steps.indexOf(step)]?.trim())) {
+    if (
+      !workflowName.trim() ||
+      !events.length ||
+      !steps.some(
+        (step) => step.run.trim() || actionSteps[steps.indexOf(step)]?.trim()
+      )
+    ) {
       setMessage("请填写名称、至少一个触发事件和一个步骤。")
       return
     }
@@ -1799,7 +1808,11 @@ function WorkflowWorkspace({
           path: items.find((entry) => entry.id === workflowID)?.path,
         }),
       })
-      setItems(workflowID ? items.map((entry) => (entry.id === item.id ? item : entry)) : [item, ...items])
+      setItems(
+        workflowID
+          ? items.map((entry) => (entry.id === item.id ? item : entry))
+          : [item, ...items]
+      )
       reset()
       setMessage("工作流已保存。")
     } catch (cause) {
@@ -1810,8 +1823,19 @@ function WorkflowWorkspace({
     setWorkflowID(item.id)
     setWorkflowName(item.name)
     setEvents(item.events?.length ? item.events : ["push", "workflow_dispatch"])
-    setSteps(item.steps?.length ? item.steps.map((step, index) => ({ name: step.name || `Step ${index + 1}`, run: step.run || "" })) : [{ name: "Build", run: "" }])
-    setActionSteps(Object.fromEntries((item.steps || []).map((step, index) => [index, step.uses || ""])))
+    setSteps(
+      item.steps?.length
+        ? item.steps.map((step, index) => ({
+            name: step.name || `Step ${index + 1}`,
+            run: step.run || "",
+          }))
+        : [{ name: "Build", run: "" }]
+    )
+    setActionSteps(
+      Object.fromEntries(
+        (item.steps || []).map((step, index) => [index, step.uses || ""])
+      )
+    )
     setEnabled(item.enabled)
     setMessage("")
   }
@@ -1843,7 +1867,8 @@ function WorkflowWorkspace({
         <div>
           <h2 className="text-xl font-semibold">工作流</h2>
           <p className="mt-1 text-sm text-zinc-500">
-            使用 GitHub Actions 格式定义触发事件和步骤，文件保存在站点设置指定的目录中。
+            使用 GitHub Actions
+            格式定义触发事件和步骤，文件保存在站点设置指定的目录中。
           </p>
         </div>
         {user && (
@@ -1870,30 +1895,121 @@ function WorkflowWorkspace({
             <p className="mb-2 text-sm font-medium">触发事件</p>
             <div className="flex flex-wrap gap-2">
               {eventOptions.map(([event, label]) => (
-                <label key={event} className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700">
-                  <input type="checkbox" checked={events.includes(event)} onChange={() => setEvents(events.includes(event) ? events.filter((value) => value !== event) : [...events, event])} />
+                <label
+                  key={event}
+                  className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
+                >
+                  <input
+                    type="checkbox"
+                    checked={events.includes(event)}
+                    onChange={() =>
+                      setEvents(
+                        events.includes(event)
+                          ? events.filter((value) => value !== event)
+                          : [...events, event]
+                      )
+                    }
+                  />
                   {label}
                 </label>
               ))}
             </div>
           </div>
           <div className="space-y-3">
-            <div className="flex items-center justify-between"><p className="text-sm font-medium">步骤</p><Button variant="outline" size="sm" onPress={() => setSteps([...steps, { name: `Step ${steps.length + 1}`, run: "" }])}><Plus />添加步骤</Button></div>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">步骤</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={() =>
+                  setSteps([
+                    ...steps,
+                    { name: `Step ${steps.length + 1}`, run: "" },
+                  ])
+                }
+              >
+                <Plus />
+                添加步骤
+              </Button>
+            </div>
             {steps.map((step, index) => (
-              <div key={index} className="grid gap-2 sm:grid-cols-[160px_1fr_auto]">
-                <Field label="名称" value={step.name} onChange={(value) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, name: value } : entry))} placeholder={`Step ${index + 1}`} />
-                <div className="space-y-2"><label className="block text-sm font-medium">Shell 命令<textarea value={step.run} onChange={(event) => setSteps(steps.map((entry, stepIndex) => stepIndex === index ? { ...entry, run: event.target.value } : entry))} className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700" /></label><Field label="或引用 Action (uses)" value={actionSteps[index] || ""} onChange={(value) => setActionSteps({ ...actionSteps, [index]: value })} placeholder="actions/checkout@v4" /></div>
-                <Button variant="ghost" aria-label="删除步骤" onPress={() => setSteps(steps.filter((_, stepIndex) => stepIndex !== index))}><Trash2 /></Button>
+              <div
+                key={index}
+                className="grid gap-2 sm:grid-cols-[160px_1fr_auto]"
+              >
+                <Field
+                  label="名称"
+                  value={step.name}
+                  onChange={(value) =>
+                    setSteps(
+                      steps.map((entry, stepIndex) =>
+                        stepIndex === index ? { ...entry, name: value } : entry
+                      )
+                    )
+                  }
+                  placeholder={`Step ${index + 1}`}
+                />
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium">
+                    Shell 命令
+                    <textarea
+                      value={step.run}
+                      onChange={(event) =>
+                        setSteps(
+                          steps.map((entry, stepIndex) =>
+                            stepIndex === index
+                              ? { ...entry, run: event.target.value }
+                              : entry
+                          )
+                        )
+                      }
+                      className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 bg-transparent p-2 font-mono text-xs dark:border-zinc-700"
+                    />
+                  </label>
+                  <Field
+                    label="或引用 Action (uses)"
+                    value={actionSteps[index] || ""}
+                    onChange={(value) =>
+                      setActionSteps({ ...actionSteps, [index]: value })
+                    }
+                    placeholder="actions/checkout@v4"
+                  />
+                </div>
+                <Button
+                  variant="ghost"
+                  aria-label="删除步骤"
+                  onPress={() =>
+                    setSteps(
+                      steps.filter((_, stepIndex) => stepIndex !== index)
+                    )
+                  }
+                >
+                  <Trash2 />
+                </Button>
               </div>
             ))}
           </div>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用工作流</label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(event) => setEnabled(event.target.checked)}
+            />
+            启用工作流
+          </label>
           <div className="flex gap-2">
-          <Button onPress={() => void save()} isDisabled={!workflowName.trim()}>
-            <Plus />
-            {workflowID ? "保存修改" : "新建工作流"}
-          </Button>
-          {workflowID > 0 && <Button variant="outline" onPress={reset}>取消编辑</Button>}
+            <Button
+              onPress={() => void save()}
+              isDisabled={!workflowName.trim()}
+            >
+              <Plus />
+              {workflowID ? "保存修改" : "新建工作流"}
+            </Button>
+            {workflowID > 0 && (
+              <Button variant="outline" onPress={reset}>
+                取消编辑
+              </Button>
+            )}
           </div>
         </section>
       )}
@@ -1907,8 +2023,35 @@ function WorkflowWorkspace({
               key={item.id}
               className="flex items-center gap-3 border-b border-zinc-100 px-5 py-3 text-sm last:border-0 dark:border-zinc-800"
             >
-              <div className="min-w-0 flex-1"><strong>{item.name}</strong><span className="ml-2 text-xs text-zinc-500">{item.enabled ? "已启用" : "已停用"}</span><span className="ml-2 block truncate text-xs text-zinc-400">{item.path}</span></div>
-              {user && <><Button variant="ghost" aria-label={`编辑 ${item.name}`} onPress={() => edit(item)}><Pencil /></Button>{item.id > 0 && <Button variant="ghost" aria-label={`删除 ${item.name}`} onPress={() => void remove(item)}><Trash2 /></Button>}</>}
+              <div className="min-w-0 flex-1">
+                <strong>{item.name}</strong>
+                <span className="ml-2 text-xs text-zinc-500">
+                  {item.enabled ? "已启用" : "已停用"}
+                </span>
+                <span className="ml-2 block truncate text-xs text-zinc-400">
+                  {item.path}
+                </span>
+              </div>
+              {user && (
+                <>
+                  <Button
+                    variant="ghost"
+                    aria-label={`编辑 ${item.name}`}
+                    onPress={() => edit(item)}
+                  >
+                    <Pencil />
+                  </Button>
+                  {item.id > 0 && (
+                    <Button
+                      variant="ghost"
+                      aria-label={`删除 ${item.name}`}
+                      onPress={() => void remove(item)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                </>
+              )}
             </div>
           ))
         ) : (
@@ -4042,6 +4185,7 @@ function PullRequestDetailPage({
 }) {
   const [pull, setPull] = useState<PullRequest | null>(null)
   const [comments, setComments] = useState<PullRequestComment[]>([])
+  const [reviews, setReviews] = useState<PullRequestReview[]>([])
   const [files, setFiles] = useState<CommitFile[]>([])
   const [section, setSection] = useState<"conversation" | "files">(
     "conversation"
@@ -4050,14 +4194,16 @@ function PullRequestDetailPage({
   const [message, setMessage] = useState("")
   const [saving, setSaving] = useState(false)
   const load = async () => {
-    const [nextPull, nextComments, nextFiles] = await Promise.all([
+    const [nextPull, nextComments, nextFiles, nextReviews] = await Promise.all([
       api<PullRequest>(`/api/repos/${name}/pulls/${pullID}`),
       api<PullRequestComment[]>(`/api/repos/${name}/pulls/${pullID}/comments`),
       api<CommitFile[]>(`/api/repos/${name}/pulls/${pullID}/files`),
+      api<PullRequestReview[]>(`/api/repos/${name}/pulls/${pullID}/reviews`),
     ])
     setPull(nextPull)
     setComments(nextComments)
     setFiles(nextFiles)
+    setReviews(nextReviews)
   }
   useEffect(() => {
     void load().catch((cause: unknown) =>
@@ -4161,6 +4307,29 @@ function PullRequestDetailPage({
                 </div>
               </article>
             ))}
+            {reviews.map((review) => (
+              <article
+                key={`${review.reviewer}-${review.updatedAt}`}
+                className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <header className="border-b border-zinc-100 bg-zinc-50 px-4 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950">
+                  <strong className="text-zinc-700 dark:text-zinc-300">
+                    {review.reviewer}
+                  </strong>{" "}
+                  {review.state === "approved"
+                    ? "批准了这些变更"
+                    : review.state === "changes_requested"
+                      ? "请求修改"
+                      : "提交了审查评论"}{" "}
+                  · {when(review.updatedAt)}
+                </header>
+                {review.body && (
+                  <div className="p-4 text-sm leading-6 whitespace-pre-wrap">
+                    {review.body}
+                  </div>
+                )}
+              </article>
+            ))}
             {user && pull.state === "open" && (
               <form
                 className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
@@ -4200,6 +4369,91 @@ function PullRequestDetailPage({
             )}
           </div>
           <aside className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            {user && pull.state === "open" && user.username !== pull.author && (
+              <div className="mb-5 border-b border-zinc-100 pb-5 dark:border-zinc-800">
+                <h2 className="font-semibold">审查</h2>
+                <p className="mt-2 text-sm text-zinc-500">
+                  批准将计入目标分支的合并规则。
+                </p>
+                <div className="mt-3 grid gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    isDisabled={saving}
+                    onPress={async () => {
+                      setSaving(true)
+                      try {
+                        await api(
+                          `/api/repos/${name}/pulls/${pullID}/reviews`,
+                          {
+                            method: "PUT",
+                            body: JSON.stringify({ state: "approved" }),
+                          }
+                        )
+                        await load()
+                        setMessage("已批准此拉取请求。")
+                      } catch (cause) {
+                        setMessage(
+                          cause instanceof Error
+                            ? cause.message
+                            : "无法提交审查。"
+                        )
+                      } finally {
+                        setSaving(false)
+                      }
+                    }}
+                  >
+                    <Check /> 批准
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    isDisabled={saving}
+                    onPress={async () => {
+                      setSaving(true)
+                      try {
+                        await api(
+                          `/api/repos/${name}/pulls/${pullID}/reviews`,
+                          {
+                            method: "PUT",
+                            body: JSON.stringify({
+                              state: "changes_requested",
+                            }),
+                          }
+                        )
+                        await load()
+                        setMessage("已请求修改。")
+                      } catch (cause) {
+                        setMessage(
+                          cause instanceof Error
+                            ? cause.message
+                            : "无法提交审查。"
+                        )
+                      } finally {
+                        setSaving(false)
+                      }
+                    }}
+                  >
+                    <Pencil /> 请求修改
+                  </Button>
+                </div>
+                {reviews.length > 0 && (
+                  <p className="mt-3 text-xs text-zinc-500">
+                    {
+                      reviews.filter((review) => review.state === "approved")
+                        .length
+                    }{" "}
+                    项批准，
+                    {
+                      reviews.filter(
+                        (review) => review.state === "changes_requested"
+                      ).length
+                    }{" "}
+                    项请求修改
+                  </p>
+                )}
+              </div>
+            )}
             <h2 className="font-semibold">合并</h2>
             <p className="mt-2 text-sm leading-6 text-zinc-500">
               将变更以合并提交写入 <code>{pull.targetBranch}</code>。

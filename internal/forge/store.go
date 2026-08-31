@@ -196,6 +196,14 @@ type PullRequestComment struct {
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
 }
+type PullRequestReview struct {
+	ID        int64     `json:"id"`
+	Reviewer  string    `json:"reviewer"`
+	State     string    `json:"state"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
 type Release struct {
 	ID        int64          `json:"id"`
 	TagName   string         `json:"tagName"`
@@ -1089,8 +1097,55 @@ func (s *Store) CreatePullRequestComment(ctx context.Context, repo string, pullI
 	return PullRequestComment{ID: id, Author: user.Username, Body: body, CreatedAt: now}, nil
 }
 
+func (s *Store) PullRequestReviews(ctx context.Context, repo string, pullID int64) ([]PullRequestReview, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,u.username,r.state,r.body,r.created_at,r.updated_at FROM pull_request_reviews r JOIN users u ON u.id=r.reviewer_id WHERE r.repository_name=`+s.arg(1)+` AND r.pull_request_id=`+s.arg(2)+` ORDER BY r.updated_at DESC`, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PullRequestReview{}
+	for rows.Next() {
+		var item PullRequestReview
+		if err := rows.Scan(&item.ID, &item.Reviewer, &item.State, &item.Body, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) SavePullRequestReview(ctx context.Context, repo string, pullID int64, user User, state, body string) (PullRequestReview, error) {
+	state = strings.TrimSpace(strings.ToLower(state))
+	if state != "approved" && state != "changes_requested" && state != "commented" {
+		return PullRequestReview{}, errors.New("review state must be approved, changes_requested, or commented")
+	}
+	pull, err := s.PullRequest(ctx, repo, pullID)
+	if err != nil {
+		return PullRequestReview{}, err
+	}
+	if pull.Author == user.Username && state == "approved" {
+		return PullRequestReview{}, errors.New("pull request authors cannot approve their own changes")
+	}
+	now := time.Now().UTC()
+	query := `INSERT INTO pull_request_reviews (repository_name,pull_request_id,reviewer_id,state,body,created_at,updated_at) VALUES (` + s.args(1, 2, 3, 4, 5, 6, 7) + `) ON CONFLICT(pull_request_id,reviewer_id) DO UPDATE SET state=EXCLUDED.state,body=EXCLUDED.body,updated_at=EXCLUDED.updated_at`
+	if _, err := s.db.ExecContext(ctx, query, repo, pullID, user.ID, state, strings.TrimSpace(body), now, now); err != nil {
+		return PullRequestReview{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE pull_requests SET updated_at=`+s.arg(1)+` WHERE repository_name=`+s.arg(2)+` AND id=`+s.arg(3), now, repo, pullID); err != nil {
+		return PullRequestReview{}, err
+	}
+	return PullRequestReview{Reviewer: user.Username, State: state, Body: strings.TrimSpace(body), CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (s *Store) PullRequestApprovalCount(ctx context.Context, repo string, pullID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pull_request_reviews WHERE repository_name=`+s.arg(1)+` AND pull_request_id=`+s.arg(2)+` AND state='approved'`, repo, pullID).Scan(&count)
+	return count, err
+}
+
 func (s *Store) DeletePullRequest(ctx context.Context, repo string, id int64) error {
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM pull_request_comments WHERE repository_name=`+s.arg(1)+` AND pull_request_id=`+s.arg(2), repo, id)
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM pull_request_reviews WHERE repository_name=`+s.arg(1)+` AND pull_request_id=`+s.arg(2), repo, id)
 	return s.deleteItem(ctx, "pull_requests", repo, id)
 }
 

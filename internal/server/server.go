@@ -247,6 +247,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}", s.pullRequest)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}/comments", s.pullRequestComments)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls/{id}/comments", s.createPullRequestComment)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}/reviews", s.pullRequestReviews)
+	mux.HandleFunc("PUT /api/repos/{scope}/{name}/pulls/{id}/reviews", s.savePullRequestReview)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/pulls/{id}/files", s.pullRequestFiles)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/pulls/{id}/merge", s.mergePullRequest)
 	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/pulls/{id}", s.updatePullRequest)
@@ -1506,6 +1508,52 @@ func (s *Server) createPullRequestComment(w http.ResponseWriter, r *http.Request
 		writeJSON(w, 201, item)
 	}
 }
+
+func (s *Server) pullRequestReviews(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.PullRequestReviews(r.Context(), repoKey(r), id)
+	if err != nil {
+		writeError(w, 500, "Could not load pull request reviews.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (s *Server) savePullRequestReview(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.requireRepositoryWrite(w, r, user) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		State string `json:"state"`
+		Body  string `json:"body"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.SavePullRequestReview(r.Context(), repoKey(r), id, user, input.State, input.Body)
+	if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Pull request not found.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 200, item)
+	}
+}
+
 func (s *Server) pullRequestFiles(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.requireRepo(w, r)
 	if !ok {
@@ -1558,6 +1606,25 @@ func (s *Server) mergePullRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil || pull.State != "open" {
 		writeError(w, 400, "Only open pull requests can be merged.")
 		return
+	}
+	protections, err := s.repos.ProtectedBranches(r.Context(), repo.FullName)
+	if err != nil {
+		writeError(w, 500, "Could not load branch protection rules.")
+		return
+	}
+	for _, protection := range protections {
+		if protection.Branch != pull.TargetBranch || protection.RequireApprovals == 0 {
+			continue
+		}
+		approvals, err := s.forge.PullRequestApprovalCount(r.Context(), repo.FullName, pull.ID)
+		if err != nil {
+			writeError(w, 500, "Could not verify pull request approvals.")
+			return
+		}
+		if approvals < protection.RequireApprovals {
+			writeError(w, 409, fmt.Sprintf("This branch requires %d approval(s); %d recorded.", protection.RequireApprovals, approvals))
+			return
+		}
 	}
 	commit, err := s.repos.MergePullRequest(r.Context(), repo, pull.SourceBranch, pull.TargetBranch, user.Username, user.Email)
 	if err != nil {

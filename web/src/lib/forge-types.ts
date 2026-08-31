@@ -27,7 +27,12 @@ export type Workflow = {
   updatedAt: string
   path?: string
   events?: string[]
-  steps?: { name?: string; run?: string; uses?: string; with?: Record<string, string> }[]
+  steps?: {
+    name?: string
+    run?: string
+    uses?: string
+    with?: Record<string, string>
+  }[]
 }
 export type WorkflowRun = {
   id: number
@@ -157,6 +162,14 @@ export type PullRequestComment = {
   author: string
   body: string
   createdAt: string
+}
+export type PullRequestReview = {
+  id: number
+  reviewer: string
+  state: "approved" | "changes_requested" | "commented"
+  body: string
+  createdAt: string
+  updatedAt: string
 }
 export type ReleaseAsset = {
   id: number
