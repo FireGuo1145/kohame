@@ -563,12 +563,45 @@ func (s *Store) SetProtectedBranch(ctx context.Context, fullName string, value P
 		return errors.New("invalid branch protection")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO protected_branches (repository_name,branch,require_pull_request,require_approvals) VALUES (`+s.placeholders(1, 2, 3, 4)+`) ON CONFLICT (repository_name,branch) DO UPDATE SET require_pull_request=EXCLUDED.require_pull_request,require_approvals=EXCLUDED.require_approvals`, fullName, value.Branch, value.RequirePullRequest, value.RequireApprovals)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.writeProtectedBranchHook(ctx, fullName)
 }
 
 func (s *Store) RemoveProtectedBranch(ctx context.Context, fullName, branch string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM protected_branches WHERE repository_name=`+s.placeholders(1)+` AND branch=`+s.placeholders(2), fullName, branch)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.writeProtectedBranchHook(ctx, fullName)
+}
+
+func (s *Store) writeProtectedBranchHook(ctx context.Context, fullName string) error {
+	repo, err := s.GetFullName(fullName)
+	if err != nil {
+		return err
+	}
+	branches, err := s.ProtectedBranches(ctx, fullName)
+	if err != nil {
+		return err
+	}
+	if len(branches) == 0 {
+		err := os.Remove(filepath.Join(repo.Path, "hooks", "pre-receive"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	patterns := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		patterns = append(patterns, "refs/heads/"+branch.Branch)
+	}
+	hook := "#!/bin/sh\n# Managed by Kohame. Direct pushes to protected branches are rejected.\n"
+	hook += "[ \"$KOHAME_INTERNAL_MERGE\" = \"1\" ] && exit 0\n"
+	hook += "while read oldrev newrev refname; do\n  case \"$refname\" in\n    " + strings.Join(patterns, "|") + ")\n      echo \"Kohame: protected branch; open and merge a pull request instead.\" >&2\n      exit 1\n      ;;\n  esac\ndone\nexit 0\n"
+	path := filepath.Join(repo.Path, "hooks", "pre-receive")
+	return os.WriteFile(path, []byte(hook), 0o755)
 }
 
 func (s *Store) Transfer(ctx context.Context, repo Repository, targetScope string) (Repository, error) {
@@ -1124,7 +1157,9 @@ func (s *Store) MergePullRequest(ctx context.Context, repo Repository, source, t
 			return Commit{}, fmt.Errorf("merge pull request: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 	}
-	if output, err := exec.CommandContext(ctx, "git", "-C", work, "push", "origin", "HEAD:refs/heads/"+target).CombinedOutput(); err != nil {
+	push := exec.CommandContext(ctx, "git", "-C", work, "push", "origin", "HEAD:refs/heads/"+target)
+	push.Env = append(os.Environ(), "KOHAME_INTERNAL_MERGE=1")
+	if output, err := push.CombinedOutput(); err != nil {
 		return Commit{}, fmt.Errorf("push merge: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	commits, err := s.Commits(ctx, repo, target)

@@ -130,6 +130,45 @@ func TestMergePullRequestBranch(t *testing.T) {
 	}
 }
 
+func TestProtectedBranchRejectsDirectPushAndAllowsMerge(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	gormDB, err := database.Open(config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(root, "kohame.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.SQLDB(gormDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := repository.NewStore(filepath.Join(root, "repos"), db, "sqlite")
+	ctx := context.Background()
+	repo, err := store.Create(ctx, "alice", "protected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Initialize(ctx, repo, "alice", "alice@example.com", true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProtectedBranch(ctx, repo.FullName, repository.ProtectedBranch{Branch: "main", RequirePullRequest: true, RequireApprovals: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteFile(ctx, repo, "main", "blocked.txt", "no\n", "alice", "alice@example.com", "blocked"); err == nil {
+		t.Fatal("direct write to protected branch succeeded")
+	}
+	if _, err := store.WriteFile(ctx, repo, "feature", "allowed.txt", "yes\n", "alice", "alice@example.com", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MergePullRequest(ctx, repo, "feature", "main", "alice", "alice@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Blob(ctx, repo, "main", "allowed.txt"); err != nil {
+		t.Fatalf("merged file missing: %v", err)
+	}
+}
+
 func TestWikiPagesPersistAcrossRename(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

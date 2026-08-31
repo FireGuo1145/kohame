@@ -126,6 +126,13 @@ func (s *Server) gitSSH(session sshserver.Session) {
 		_ = session.Exit(1)
 		return
 	}
+	username := session.Context().Permissions().Extensions["username"]
+	user, err := s.forge.UserByUsername(context.Background(), username)
+	if err != nil || !s.canAccessRepository(context.Background(), user, repo, command[0] == "git-receive-pack") {
+		_, _ = io.WriteString(session, "Repository access denied.\n")
+		_ = session.Exit(1)
+		return
+	}
 	cmd := exec.Command(command[0], repo.Path)
 	cmd.Stdin = session
 	cmd.Stdout = session
@@ -1248,6 +1255,9 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireRepositoryWrite(w, r, user) {
+		return
+	}
 	var input struct {
 		Title    string  `json:"title"`
 		Body     string  `json:"body"`
@@ -1321,6 +1331,9 @@ func (s *Server) createIssueComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireRepositoryWrite(w, r, user) {
+		return
+	}
 	id, ok := pathID(w, r)
 	if !ok {
 		return
@@ -1346,7 +1359,8 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	if _, ok := s.requireUser(w, r); !ok {
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.requireRepositoryWrite(w, r, user) {
 		return
 	}
 	id, ok := pathID(w, r)
@@ -1374,7 +1388,8 @@ func (s *Server) deleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	if _, ok := s.requireUser(w, r); !ok {
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.requireRepositoryWrite(w, r, user) {
 		return
 	}
 	id, ok := pathID(w, r)
@@ -1406,6 +1421,9 @@ func (s *Server) createPullRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	user, ok := s.requireUser(w, r)
 	if !ok {
+		return
+	}
+	if !s.requireRepositoryWrite(w, r, user) {
 		return
 	}
 	var input struct {
@@ -1464,6 +1482,9 @@ func (s *Server) createPullRequestComment(w http.ResponseWriter, r *http.Request
 	}
 	user, ok := s.requireUser(w, r)
 	if !ok {
+		return
+	}
+	if !s.requireRepositoryWrite(w, r, user) {
 		return
 	}
 	id, ok := pathID(w, r)
@@ -1556,7 +1577,8 @@ func (s *Server) updatePullRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	if _, ok := s.requireUser(w, r); !ok {
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.requireRepositoryWrite(w, r, user) {
 		return
 	}
 	id, ok := pathID(w, r)
@@ -1597,7 +1619,8 @@ func (s *Server) deletePullRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.hasRepo(w, r) {
 		return
 	}
-	if _, ok := s.requireUser(w, r); !ok {
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.requireRepositoryWrite(w, r, user) {
 		return
 	}
 	id, ok := pathID(w, r)
@@ -1803,8 +1826,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	allowed, err := s.forge.CanUseScope(r.Context(), user, repo.Scope)
-	if err != nil || !allowed {
+	if !s.canAccessRepository(r.Context(), user, repo, true) {
 		writeError(w, 403, "无权修改此仓库。")
 		return
 	}
@@ -2758,11 +2780,45 @@ func (s *Server) deleteRepository(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 func (s *Server) canManageRepository(r *http.Request, user forge.User) bool {
-	if allowed, err := s.forge.CanUseScope(r.Context(), user, r.PathValue("scope")); err == nil && allowed {
+	repo, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name"))
+	return err == nil && s.canAccessRepository(r.Context(), user, repo, true) && s.isRepositoryManager(r.Context(), user, repo)
+}
+
+func (s *Server) canAccessRepository(ctx context.Context, user forge.User, repo repository.Repository, write bool) bool {
+	if user.IsAdmin || s.isRepositoryOwner(ctx, user, repo) {
 		return true
 	}
-	permission, err := s.repos.CollaboratorPermission(r.Context(), repoKey(r), user.Username)
+	permission, err := s.repos.CollaboratorPermission(ctx, repo.FullName, user.Username)
+	if err != nil || permission == "" {
+		if write {
+			return false
+		}
+		settings, settingsErr := s.repos.Settings(ctx, repo.FullName)
+		return settingsErr == nil && settings.Visibility == "public"
+	}
+	return !write || permission == "write" || permission == "maintain" || permission == "admin"
+}
+
+func (s *Server) isRepositoryOwner(ctx context.Context, user forge.User, repo repository.Repository) bool {
+	allowed, err := s.forge.CanUseScope(ctx, user, repo.Scope)
+	return err == nil && allowed
+}
+
+func (s *Server) isRepositoryManager(ctx context.Context, user forge.User, repo repository.Repository) bool {
+	if user.IsAdmin || s.isRepositoryOwner(ctx, user, repo) {
+		return true
+	}
+	permission, err := s.repos.CollaboratorPermission(ctx, repo.FullName, user.Username)
 	return err == nil && (permission == "maintain" || permission == "admin")
+}
+
+func (s *Server) requireRepositoryWrite(w http.ResponseWriter, r *http.Request, user forge.User) bool {
+	repo, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name"))
+	if err != nil || !s.canAccessRepository(r.Context(), user, repo, true) {
+		writeError(w, http.StatusForbidden, "You do not have write access to this repository.")
+		return false
+	}
+	return true
 }
 
 type credentials struct {
@@ -2780,7 +2836,16 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	return true
 }
 func (s *Server) hasRepo(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name")); err != nil {
+	repo, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name"))
+	if err != nil {
+		writeError(w, 404, "Repository not found.")
+		return false
+	}
+	if user, err := s.currentUser(r); err == nil && s.canAccessRepository(r.Context(), user, repo, false) {
+		return true
+	}
+	settings, err := s.repos.Settings(r.Context(), repo.FullName)
+	if err != nil || settings.Visibility != "public" {
 		writeError(w, 404, "Repository not found.")
 		return false
 	}
@@ -2790,6 +2855,14 @@ func (s *Server) hasRepo(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) requireRepo(w http.ResponseWriter, r *http.Request) (repository.Repository, bool) {
 	repo, err := s.repos.Get(r.PathValue("scope"), r.PathValue("name"))
 	if err != nil {
+		writeError(w, http.StatusNotFound, "Repository not found.")
+		return repository.Repository{}, false
+	}
+	if user, userErr := s.currentUser(r); userErr == nil && s.canAccessRepository(r.Context(), user, repo, false) {
+		return repo, true
+	}
+	settings, settingsErr := s.repos.Settings(r.Context(), repo.FullName)
+	if settingsErr != nil || settings.Visibility != "public" {
 		writeError(w, http.StatusNotFound, "Repository not found.")
 		return repository.Repository{}, false
 	}
@@ -2910,8 +2983,14 @@ func (s *Server) serveGit(w http.ResponseWriter, r *http.Request, scope, name, r
 		writeError(w, http.StatusUnauthorized, "Sign in with your Kohame username and password to use Git HTTP.")
 		return
 	}
-	if _, err := s.repos.Get(scope, name); err != nil {
+	repo, err := s.repos.Get(scope, name)
+	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	write := rest == "git-receive-pack"
+	if !s.canAccessRepository(r.Context(), user, repo, write) {
+		writeError(w, http.StatusForbidden, "Repository access denied.")
 		return
 	}
 	if strings.Contains(rest, "..") {
