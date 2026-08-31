@@ -48,6 +48,7 @@ func Open(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		`CREATE TABLE IF NOT EXISTS repositories (name VARCHAR(80) PRIMARY KEY, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS users (id ` + idColumn + `, username VARCHAR(40) UNIQUE NOT NULL, email VARCHAR(255) UNIQUE NOT NULL, password_hash TEXT NOT NULL, is_admin BOOLEAN NOT NULL DEFAULT FALSE, email_verified BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sessions (token_hash VARCHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL, expires_at TIMESTAMP NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS personal_access_tokens (id ` + idColumn + `, user_id BIGINT NOT NULL, name VARCHAR(120) NOT NULL, token_hash VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP NOT NULL, last_used_at TIMESTAMP, expires_at TIMESTAMP, UNIQUE(user_id, name))`,
 		`CREATE TABLE IF NOT EXISTS settings (key VARCHAR(80) PRIMARY KEY, value TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS issues (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, author_id BIGINT NOT NULL, title VARCHAR(255) NOT NULL, body TEXT NOT NULL, state VARCHAR(16) NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS issue_comments (id ` + idColumn + `, repository_name VARCHAR(80) NOT NULL, issue_id BIGINT NOT NULL, author_id BIGINT NOT NULL, body TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,

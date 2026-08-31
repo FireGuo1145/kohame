@@ -172,6 +172,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/user/settings", s.updatePersonalSettings)
 	mux.HandleFunc("POST /api/user/avatar", s.uploadAvatar)
 	mux.HandleFunc("GET /api/user/ssh-keys", s.sshKeys)
+	mux.HandleFunc("GET /api/user/tokens", s.personalAccessTokens)
+	mux.HandleFunc("POST /api/user/tokens", s.createPersonalAccessToken)
+	mux.HandleFunc("DELETE /api/user/tokens/{id}", s.deletePersonalAccessToken)
 	mux.HandleFunc("GET /api/user/runners", s.userRunners)
 	mux.HandleFunc("POST /api/user/runners", s.createUserRunner)
 	mux.HandleFunc("DELETE /api/user/runners/{id}", s.deleteUserRunner)
@@ -3109,7 +3112,59 @@ func (s *Server) gitUser(r *http.Request) (forge.User, error) {
 	if !ok {
 		return forge.User{}, forge.ErrUnauthorized
 	}
+	if user, err := s.forge.AuthenticatePersonalAccessToken(r.Context(), username, password); err == nil {
+		return user, nil
+	}
 	return s.forge.Authenticate(r.Context(), username, password)
+}
+
+func (s *Server) personalAccessTokens(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.PersonalAccessTokens(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, 500, "Could not load tokens.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) createPersonalAccessToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name      string     `json:"name"`
+		ExpiresAt *time.Time `json:"expiresAt"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreatePersonalAccessToken(r.Context(), user, input.Name, input.ExpiresAt)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (s *Server) deletePersonalAccessToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeletePersonalAccessToken(r.Context(), user.ID, id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Token not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not delete token.")
+	} else {
+		w.WriteHeader(204)
+	}
 }
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (forge.User, bool) {
 	user, err := s.currentUser(r)

@@ -305,6 +305,17 @@ type SSHKey struct {
 	Key       string    `json:"key"`
 	CreatedAt time.Time `json:"createdAt"`
 }
+type PersonalAccessToken struct {
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+}
+type PersonalAccessTokenRegistration struct {
+	PersonalAccessToken
+	Token string `json:"token"`
+}
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
 
@@ -533,6 +544,61 @@ func (s *Store) Authenticate(ctx context.Context, identity, password string) (Us
 		return User{}, ErrUnauthorized
 	}
 	return user, nil
+}
+
+func (s *Store) CreatePersonalAccessToken(ctx context.Context, user User, name string, expiresAt *time.Time) (PersonalAccessTokenRegistration, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return PersonalAccessTokenRegistration{}, errors.New("token name is required")
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return PersonalAccessTokenRegistration{}, err
+	}
+	token := "koh_" + hex.EncodeToString(raw)
+	now := time.Now().UTC()
+	id, err := s.insertID(ctx, `INSERT INTO personal_access_tokens (user_id,name,token_hash,created_at,expires_at) VALUES (`+s.args(1, 2, 3, 4, 5)+`)`, user.ID, name, tokenHash(token), now, expiresAt)
+	if err != nil {
+		return PersonalAccessTokenRegistration{}, err
+	}
+	return PersonalAccessTokenRegistration{PersonalAccessToken: PersonalAccessToken{ID: id, Name: name, CreatedAt: now, ExpiresAt: expiresAt}, Token: token}, nil
+}
+func (s *Store) PersonalAccessTokens(ctx context.Context, userID int64) ([]PersonalAccessToken, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,created_at,last_used_at,expires_at FROM personal_access_tokens WHERE user_id=`+s.arg(1)+` ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PersonalAccessToken{}
+	for rows.Next() {
+		var x PersonalAccessToken
+		if err := rows.Scan(&x.ID, &x.Name, &x.CreatedAt, &x.LastUsedAt, &x.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+func (s *Store) DeletePersonalAccessToken(ctx context.Context, userID, id int64) error {
+	r, e := s.db.ExecContext(ctx, `DELETE FROM personal_access_tokens WHERE id=`+s.arg(1)+` AND user_id=`+s.arg(2), id, userID)
+	if e != nil {
+		return e
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+func (s *Store) AuthenticatePersonalAccessToken(ctx context.Context, identity, token string) (User, error) {
+	var user User
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.email,u.is_admin,u.email_verified,u.created_at FROM personal_access_tokens t JOIN users u ON u.id=t.user_id WHERE u.username=`+s.arg(1)+` AND t.token_hash=`+s.arg(2)+` AND (t.expires_at IS NULL OR t.expires_at>`+s.arg(3)+`)`, strings.ToLower(strings.TrimSpace(identity)), tokenHash(token), time.Now().UTC()).Scan(&user.ID, &user.Username, &user.Email, &user.IsAdmin, &user.EmailVerified, &user.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUnauthorized
+	}
+	if err == nil {
+		_, _ = s.db.ExecContext(ctx, `UPDATE personal_access_tokens SET last_used_at=`+s.arg(1)+` WHERE token_hash=`+s.arg(2), time.Now().UTC(), tokenHash(token))
+	}
+	return user, err
 }
 
 func (s *Store) OIDCProviders(ctx context.Context, includeDisabled bool) ([]OIDCProvider, error) {
