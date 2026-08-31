@@ -1,10 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -230,6 +234,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/transfer", s.transferRepository)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/rename", s.renameRepository)
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}", s.deleteRepository)
+	mux.HandleFunc("GET /api/repos/{scope}/{name}/webhooks", s.webhooks)
+	mux.HandleFunc("POST /api/repos/{scope}/{name}/webhooks", s.saveWebhook)
+	mux.HandleFunc("PATCH /api/repos/{scope}/{name}/webhooks/{id}", s.saveWebhook)
+	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/webhooks/{id}", s.deleteWebhook)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/blob", s.blob)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/raw", s.rawFile)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/file-commit", s.fileCommit)
@@ -2721,8 +2729,108 @@ func workflowSteps(steps []forge.WorkflowStep) []repository.WorkflowStep {
 
 func (s *Server) queueWorkflowEvent(repoName, event string) {
 	go func() {
+		s.dispatchWebhooks(context.Background(), repoName, event)
 		_, _ = s.executeWorkflows(context.Background(), repoName, event)
 	}()
+}
+
+func (s *Server) webhooks(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	items, err := s.forge.Webhooks(r.Context(), repoKey(r))
+	if err != nil {
+		writeError(w, 500, "无法读取 Webhook。")
+		return
+	}
+	for i := range items {
+		items[i].Secret = ""
+	}
+	writeJSON(w, 200, items)
+}
+func (s *Server) saveWebhook(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理 Webhook。")
+		return
+	}
+	var input forge.Webhook
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if r.Method == http.MethodPatch {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		input.ID = id
+	}
+	item, err := s.forge.SaveWebhook(r.Context(), repoKey(r), input)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	item.Secret = ""
+	writeJSON(w, 200, item)
+}
+func (s *Server) deleteWebhook(w http.ResponseWriter, r *http.Request) {
+	if !s.hasRepo(w, r) {
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok || !s.canManageRepository(r, user) {
+		writeError(w, 403, "无权管理 Webhook。")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeleteWebhook(r.Context(), repoKey(r), id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Webhook 不存在。")
+	} else if err != nil {
+		writeError(w, 500, "无法删除 Webhook。")
+	} else {
+		w.WriteHeader(204)
+	}
+}
+func (s *Server) dispatchWebhooks(ctx context.Context, repoName, event string) {
+	items, err := s.forge.Webhooks(ctx, repoName)
+	if err != nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"event": event, "repository": repoName, "timestamp": time.Now().UTC()})
+	for _, hook := range items {
+		if !hook.Active || !webhookEventEnabled(hook.Events, event) {
+			continue
+		}
+		go func(h forge.Webhook) {
+			req, err := http.NewRequest(http.MethodPost, h.URL, bytes.NewReader(payload))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Kohame-Event", event)
+			mac := hmac.New(sha256.New, []byte(h.Secret))
+			mac.Write(payload)
+			req.Header.Set("X-Kohame-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}(hook)
+	}
+}
+func webhookEventEnabled(events []string, event string) bool {
+	for _, value := range events {
+		if strings.TrimSpace(value) == event || strings.TrimSpace(value) == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowDirectory(value string) string {

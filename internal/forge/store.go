@@ -316,6 +316,16 @@ type PersonalAccessTokenRegistration struct {
 	PersonalAccessToken
 	Token string `json:"token"`
 }
+type Webhook struct {
+	ID         int64     `json:"id"`
+	Repository string    `json:"repository"`
+	URL        string    `json:"url"`
+	Secret     string    `json:"secret,omitempty"`
+	Events     []string  `json:"events"`
+	Active     bool      `json:"active"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
 
 func NewStore(db *sql.DB, driver string) *Store { return &Store{db: db, driver: driver} }
 
@@ -581,6 +591,59 @@ func (s *Store) PersonalAccessTokens(ctx context.Context, userID int64) ([]Perso
 }
 func (s *Store) DeletePersonalAccessToken(ctx context.Context, userID, id int64) error {
 	r, e := s.db.ExecContext(ctx, `DELETE FROM personal_access_tokens WHERE id=`+s.arg(1)+` AND user_id=`+s.arg(2), id, userID)
+	if e != nil {
+		return e
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) Webhooks(ctx context.Context, repo string) ([]Webhook, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,url,secret,events,active,created_at,updated_at FROM webhooks WHERE repository_name=`+s.arg(1)+` ORDER BY id DESC`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Webhook{}
+	for rows.Next() {
+		var x Webhook
+		var events string
+		if err := rows.Scan(&x.ID, &x.URL, &x.Secret, &events, &x.Active, &x.CreatedAt, &x.UpdatedAt); err != nil {
+			return nil, err
+		}
+		x.Repository = repo
+		x.Events = strings.FieldsFunc(events, func(r rune) bool { return r == ',' })
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+func (s *Store) SaveWebhook(ctx context.Context, repo string, item Webhook) (Webhook, error) {
+	item.URL = strings.TrimSpace(item.URL)
+	if !strings.HasPrefix(item.URL, "http://") && !strings.HasPrefix(item.URL, "https://") {
+		return Webhook{}, errors.New("webhook URL must start with http:// or https://")
+	}
+	if len(item.Events) == 0 {
+		item.Events = []string{"push"}
+	}
+	events := strings.Join(item.Events, ",")
+	now := time.Now().UTC()
+	if item.ID == 0 {
+		id, err := s.insertID(ctx, `INSERT INTO webhooks (repository_name,url,secret,events,active,created_at,updated_at) VALUES (`+s.args(1, 2, 3, 4, 5, 6, 7)+`)`, repo, item.URL, strings.TrimSpace(item.Secret), events, item.Active, now, now)
+		item.ID = id
+		item.CreatedAt = now
+		item.UpdatedAt = now
+		item.Repository = repo
+		return item, err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE webhooks SET url=`+s.arg(1)+`,secret=`+s.arg(2)+`,events=`+s.arg(3)+`,active=`+s.arg(4)+`,updated_at=`+s.arg(5)+` WHERE id=`+s.arg(6)+` AND repository_name=`+s.arg(7), item.URL, item.Secret, events, item.Active, now, item.ID, repo)
+	item.Repository = repo
+	item.UpdatedAt = now
+	return item, err
+}
+func (s *Store) DeleteWebhook(ctx context.Context, repo string, id int64) error {
+	r, e := s.db.ExecContext(ctx, `DELETE FROM webhooks WHERE id=`+s.arg(1)+` AND repository_name=`+s.arg(2), id, repo)
 	if e != nil {
 		return e
 	}
