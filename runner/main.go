@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 	"kohame/internal/forge"
@@ -42,51 +42,69 @@ type actionDefinition struct {
 	} `yaml:"runs"`
 }
 
-type runner struct{ token string }
-
 func main() {
-	addr := flag.String("addr", ":8090", "runner listen address")
-	token := flag.String("token", os.Getenv("KOHAME_RUNNER_TOKEN"), "shared token used by Kohame")
+	serverURL := flag.String("server", os.Getenv("KOHAME_SERVER_URL"), "Kohame server URL")
+	token := flag.String("token", os.Getenv("KOHAME_RUNNER_TOKEN"), "runner registration token")
+	pollInterval := flag.Duration("poll-interval", 5*time.Second, "interval between job polls")
 	flag.Parse()
-	handler := &runner{token: strings.TrimSpace(*token)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.HandleFunc("POST /v1/execute", handler.execute)
-	server := &http.Server{Addr: *addr, Handler: requestLimit(mux)}
-	if handler.token == "" {
-		fmt.Fprintln(os.Stderr, "warning: runner token is empty; configure -token or KOHAME_RUNNER_TOKEN")
+	if strings.TrimSpace(*serverURL) == "" || strings.TrimSpace(*token) == "" {
+		fmt.Fprintln(os.Stderr, "-server and -token (or KOHAME_SERVER_URL and KOHAME_RUNNER_TOKEN) are required")
+		os.Exit(2)
 	}
-	fmt.Printf("Kohame runner listening on http://localhost%s\n", *addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		panic(err)
+	fmt.Printf("Kohame runner polling %s every %s\n", strings.TrimRight(*serverURL, "/"), *pollInterval)
+	client := &http.Client{Timeout: 30 * time.Second}
+	for {
+		if err := pollOnce(context.Background(), client, strings.TrimRight(*serverURL, "/"), strings.TrimSpace(*token)); err != nil {
+			fmt.Fprintln(os.Stderr, "runner poll:", err)
+		}
+		time.Sleep(*pollInterval)
 	}
 }
 
-func requestLimit(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ContentLength > 64<<20 {
-			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (r *runner) execute(w http.ResponseWriter, request *http.Request) {
-	if r.token != "" {
-		provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(r.token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+func pollOnce(ctx context.Context, client *http.Client, serverURL, token string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/api/runner/jobs", nil)
+	if err != nil {
+		return err
 	}
-	var input executeRequest
-	if err := json.NewDecoder(io.LimitReader(request.Body, 64<<20)).Decode(&input); err != nil {
-		writeJSON(w, http.StatusBadRequest, executeResponse{Status: "failure", Output: err.Error()})
-		return
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return err
 	}
-	status, output := executeWorkflow(request.Context(), input)
-	writeJSON(w, http.StatusOK, executeResponse{Status: status, Output: output})
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("claim job: %s", response.Status)
+	}
+	var job struct {
+		ID int64 `json:"id"`
+		executeRequest
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<20)).Decode(&job); err != nil {
+		return err
+	}
+	status, output := executeWorkflow(ctx, job.executeRequest)
+	body, err := json.Marshal(executeResponse{Status: status, Output: output})
+	if err != nil {
+		return err
+	}
+	complete, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/api/runner/jobs/%d/complete", serverURL, job.ID), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	complete.Header.Set("Authorization", "Bearer "+token)
+	complete.Header.Set("Content-Type", "application/json")
+	result, err := client.Do(complete)
+	if err != nil {
+		return err
+	}
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("complete job: %s", result.Status)
+	}
+	return nil
 }
 
 func executeWorkflow(ctx context.Context, input executeRequest) (string, string) {

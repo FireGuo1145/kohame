@@ -79,6 +79,8 @@ func Open(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		`CREATE TABLE IF NOT EXISTS oidc_states (state VARCHAR(128) PRIMARY KEY, provider_id BIGINT NOT NULL, redirect_path VARCHAR(2048) NOT NULL DEFAULT '/', expires_at TIMESTAMP NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS workflows (id ` + idColumn + `, repository_name VARCHAR(161) NOT NULL, name VARCHAR(120) NOT NULL, config TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, UNIQUE(repository_name, name))`,
 		`CREATE TABLE IF NOT EXISTS workflow_runs (id ` + idColumn + `, workflow_id BIGINT NOT NULL, repository_name VARCHAR(161) NOT NULL, event VARCHAR(80) NOT NULL, status VARCHAR(16) NOT NULL, output TEXT NOT NULL DEFAULT '', started_at TIMESTAMP NOT NULL, finished_at TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS runners (id ` + idColumn + `, owner_id BIGINT NOT NULL, name VARCHAR(120) NOT NULL, token_hash VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP NOT NULL, last_seen_at TIMESTAMP, UNIQUE(owner_id, name))`,
+		`CREATE TABLE IF NOT EXISTS workflow_jobs (id ` + idColumn + `, workflow_run_id BIGINT NOT NULL, runner_id BIGINT NOT NULL, repository_name VARCHAR(161) NOT NULL, workflow_name VARCHAR(120) NOT NULL, event VARCHAR(80) NOT NULL, workspace BLOB NOT NULL, steps TEXT NOT NULL, status VARCHAR(16) NOT NULL, claimed_at TIMESTAMP, completed_at TIMESTAMP)`,
 	}
 	for _, statement := range statements {
 		if err := db.Exec(statement).Error; err != nil {

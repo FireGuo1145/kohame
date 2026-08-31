@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -137,6 +138,24 @@ type WorkflowRun struct {
 	Output         string     `json:"output"`
 	StartedAt      time.Time  `json:"startedAt"`
 	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
+}
+type Runner struct {
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+}
+type RunnerRegistration struct {
+	Runner
+	Token string `json:"token"`
+}
+type RunnerJob struct {
+	ID         int64          `json:"id"`
+	Repository string         `json:"repository"`
+	Workflow   string         `json:"workflow"`
+	Event      string         `json:"event"`
+	Workspace  []byte         `json:"workspace"`
+	Steps      []WorkflowStep `json:"steps"`
 }
 type SiteSettings struct {
 	Title             string `json:"title"`
@@ -1517,6 +1536,140 @@ func (s *Store) Notifications(ctx context.Context, userID int64) ([]Notification
 func (s *Store) ReadNotification(ctx context.Context, userID, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET is_read=`+s.arg(1)+` WHERE id=`+s.arg(2)+` AND user_id=`+s.arg(3), true, id, userID)
 	return err
+}
+
+func (s *Store) CreateRunner(ctx context.Context, user User, name string) (RunnerRegistration, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 120 {
+		return RunnerRegistration{}, errors.New("runner name is required and must be at most 120 characters")
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return RunnerRegistration{}, err
+	}
+	token := hex.EncodeToString(raw)
+	now := time.Now().UTC()
+	query := `INSERT INTO runners (owner_id,name,token_hash,created_at) VALUES (` + s.args(1, 2, 3, 4) + `)`
+	id, err := s.insertID(ctx, query, user.ID, name, tokenHash(token), now)
+	if err != nil {
+		if isUnique(err) {
+			return RunnerRegistration{}, ErrConflict
+		}
+		return RunnerRegistration{}, err
+	}
+	return RunnerRegistration{Runner: Runner{ID: id, Name: name, CreatedAt: now}, Token: token}, nil
+}
+
+func (s *Store) Runners(ctx context.Context, userID int64) ([]Runner, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,created_at,last_seen_at FROM runners WHERE owner_id=`+s.arg(1)+` ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Runner{}
+	for rows.Next() {
+		var item Runner
+		if err := rows.Scan(&item.ID, &item.Name, &item.CreatedAt, &item.LastSeenAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) DeleteRunner(ctx context.Context, userID, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM runners WHERE id=`+s.arg(1)+` AND owner_id=`+s.arg(2), id, userID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) runnerByToken(ctx context.Context, token string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM runners WHERE token_hash=`+s.arg(1), tokenHash(token)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrUnauthorized
+	}
+	return id, err
+}
+
+func (s *Store) EnqueueWorkflowJob(ctx context.Context, runnerID, runID int64, repository, workflow, event string, workspace []byte, steps []WorkflowStep) error {
+	encoded, err := json.Marshal(steps)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO workflow_jobs (workflow_run_id,runner_id,repository_name,workflow_name,event,workspace,steps,status) VALUES (`+s.args(1, 2, 3, 4, 5, 6, 7, 8)+`)`, runID, runnerID, repository, workflow, event, workspace, string(encoded), "queued")
+	return err
+}
+
+func (s *Store) ClaimWorkflowJob(ctx context.Context, token string) (RunnerJob, bool, error) {
+	runnerID, err := s.runnerByToken(ctx, token)
+	if err != nil {
+		return RunnerJob{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RunnerJob{}, false, err
+	}
+	defer tx.Rollback()
+	var job RunnerJob
+	var steps string
+	err = tx.QueryRowContext(ctx, `SELECT id,repository_name,workflow_name,event,workspace,steps FROM workflow_jobs WHERE runner_id=`+s.arg(1)+` AND status='queued' ORDER BY id LIMIT 1`, runnerID).Scan(&job.ID, &job.Repository, &job.Workflow, &job.Event, &job.Workspace, &steps)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, _ = tx.ExecContext(ctx, `UPDATE runners SET last_seen_at=`+s.arg(1)+` WHERE id=`+s.arg(2), time.Now().UTC(), runnerID)
+		return RunnerJob{}, false, tx.Commit()
+	}
+	if err != nil {
+		return RunnerJob{}, false, err
+	}
+	if err := json.Unmarshal([]byte(steps), &job.Steps); err != nil {
+		return RunnerJob{}, false, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE workflow_jobs SET status='running',claimed_at=`+s.arg(1)+` WHERE id=`+s.arg(2)+` AND runner_id=`+s.arg(3)+` AND status='queued'`, time.Now().UTC(), job.ID, runnerID)
+	if err != nil {
+		return RunnerJob{}, false, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return RunnerJob{}, false, tx.Commit()
+	}
+	_, _ = tx.ExecContext(ctx, `UPDATE runners SET last_seen_at=`+s.arg(1)+` WHERE id=`+s.arg(2), time.Now().UTC(), runnerID)
+	return job, true, tx.Commit()
+}
+
+func (s *Store) CompleteWorkflowJob(ctx context.Context, token string, jobID int64, status, output string) error {
+	if status != "success" && status != "failure" {
+		return errors.New("job status must be success or failure")
+	}
+	runnerID, err := s.runnerByToken(ctx, token)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var runID int64
+	err = tx.QueryRowContext(ctx, `SELECT workflow_run_id FROM workflow_jobs WHERE id=`+s.arg(1)+` AND runner_id=`+s.arg(2)+` AND status='running'`, jobID, runnerID).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE workflow_jobs SET status='completed',completed_at=`+s.arg(1)+` WHERE id=`+s.arg(2), now, jobID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET status=`+s.arg(1)+`,output=`+s.arg(2)+`,finished_at=`+s.arg(3)+` WHERE id=`+s.arg(4), status, output, now, runID); err != nil {
+		return err
+	}
+	_, _ = tx.ExecContext(ctx, `UPDATE runners SET last_seen_at=`+s.arg(1)+` WHERE id=`+s.arg(2), now, runnerID)
+	return tx.Commit()
 }
 func (s *Store) insertID(ctx context.Context, query string, args ...any) (int64, error) {
 	if s.driver == "pgsql" {

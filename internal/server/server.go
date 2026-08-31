@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -173,6 +172,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/user/settings", s.updatePersonalSettings)
 	mux.HandleFunc("POST /api/user/avatar", s.uploadAvatar)
 	mux.HandleFunc("GET /api/user/ssh-keys", s.sshKeys)
+	mux.HandleFunc("GET /api/user/runners", s.userRunners)
+	mux.HandleFunc("POST /api/user/runners", s.createUserRunner)
+	mux.HandleFunc("DELETE /api/user/runners/{id}", s.deleteUserRunner)
 	mux.HandleFunc("GET /api/user/starred-repos", s.starredRepos)
 	mux.HandleFunc("POST /api/user/ssh-keys", s.addSSHKey)
 	mux.HandleFunc("DELETE /api/user/ssh-keys/{id}", s.deleteSSHKey)
@@ -258,6 +260,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/repos/{scope}/{name}/releases/{id}", s.deleteRelease)
 	mux.HandleFunc("POST /api/repos/{scope}/{name}/releases/{id}/assets", s.uploadReleaseAsset)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}/contributors", s.contributors)
+	mux.HandleFunc("GET /api/runner/jobs", s.claimRunnerJob)
+	mux.HandleFunc("POST /api/runner/jobs/{id}/complete", s.completeRunnerJob)
 	mux.HandleFunc("GET /api/repos/{scope}/{name}", s.getRepo)
 	mux.Handle("GET /uploads/avatars/", http.StripPrefix("/uploads/avatars/", http.FileServer(http.Dir(s.avatarDir))))
 	mux.Handle("GET /uploads/releases/", http.StripPrefix("/uploads/releases/", http.FileServer(http.Dir(s.releaseDir))))
@@ -773,6 +777,106 @@ func (s *Server) sshKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+func (s *Server) userRunners(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.forge.Runners(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, 500, "Could not load runners.")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (s *Server) createUserRunner(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.forge.CreateRunner(r.Context(), user, input.Name)
+	if errors.Is(err, forge.ErrConflict) {
+		writeError(w, 409, "A runner with that name already exists.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		writeJSON(w, 201, item)
+	}
+}
+
+func (s *Server) deleteUserRunner(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.forge.DeleteRunner(r.Context(), user.ID, id); errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Runner not found.")
+	} else if err != nil {
+		writeError(w, 500, "Could not delete runner.")
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func runnerToken(r *http.Request) string {
+	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+}
+
+func (s *Server) claimRunnerJob(w http.ResponseWriter, r *http.Request) {
+	if runnerToken(r) == "" {
+		writeError(w, 401, "Runner token is required.")
+		return
+	}
+	job, found, err := s.forge.ClaimWorkflowJob(r.Context(), runnerToken(r))
+	if errors.Is(err, forge.ErrUnauthorized) {
+		writeError(w, 401, "Runner token is invalid.")
+	} else if err != nil {
+		writeError(w, 500, "Could not claim a workflow job.")
+	} else if !found {
+		w.WriteHeader(http.StatusNoContent)
+	} else {
+		writeJSON(w, 200, job)
+	}
+}
+
+func (s *Server) completeRunnerJob(w http.ResponseWriter, r *http.Request) {
+	if runnerToken(r) == "" {
+		writeError(w, 401, "Runner token is required.")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Status string `json:"status"`
+		Output string `json:"output"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.forge.CompleteWorkflowJob(r.Context(), runnerToken(r), id, input.Status, input.Output); errors.Is(err, forge.ErrUnauthorized) {
+		writeError(w, 401, "Runner token is invalid.")
+	} else if errors.Is(err, forge.ErrNotFound) {
+		writeError(w, 404, "Workflow job not found.")
+	} else if err != nil {
+		writeError(w, 400, err.Error())
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 func (s *Server) starredRepos(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -2381,20 +2485,30 @@ func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) (
 		}
 		started := time.Now().UTC()
 		run := repository.WorkflowRun{WorkflowID: workflow.ID, RepositoryName: repoName, Event: event, Status: "running", StartedAt: started}
+		if runner, err := s.runnerForRepository(ctx, repoName); err == nil && runner.ID > 0 {
+			repo, err := s.repos.GetFullName(repoName)
+			if err != nil {
+				return nil, err
+			}
+			workspace, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "archive", "--format=tar", "HEAD").Output()
+			if err != nil {
+				return nil, fmt.Errorf("create workflow workspace: %w", err)
+			}
+			run.Status = "queued"
+			id, err := s.repos.CreateWorkflowRun(ctx, run)
+			if err != nil {
+				return nil, err
+			}
+			run.ID = id
+			if err := s.forge.EnqueueWorkflowJob(ctx, runner.ID, id, repoName, workflow.Name, event, workspace, config.Steps); err != nil {
+				return nil, err
+			}
+			runs = append(runs, run)
+			continue
+		}
 		var output strings.Builder
 		failed := false
-		settings, settingsErr := s.forge.Settings(ctx)
-		if settingsErr != nil {
-			failed = true
-			output.WriteString(settingsErr.Error())
-		} else if settings.RunnerEnabled {
-			value, runErr := s.executeOnRunner(ctx, settings, repoName, workflow.Name, event, config.Steps)
-			output.Write(value)
-			if runErr != nil {
-				failed = true
-				output.WriteString("\n" + runErr.Error())
-			}
-		} else {
+		{
 			parts := strings.SplitN(repoName, "/", 2)
 			work, workErr := os.MkdirTemp("", "kohame-workflow-")
 			if workErr == nil {
@@ -2450,57 +2564,21 @@ func (s *Server) executeWorkflows(ctx context.Context, repoName, event string) (
 	return runs, nil
 }
 
-type runnerExecuteRequest struct {
-	Event      string               `json:"event"`
-	Repository string               `json:"repository"`
-	Workflow   string               `json:"workflow"`
-	Workspace  []byte               `json:"workspace"`
-	Steps      []forge.WorkflowStep `json:"steps"`
-}
-
-type runnerExecuteResponse struct {
-	Status string `json:"status"`
-	Output string `json:"output"`
-}
-
-func (s *Server) executeOnRunner(ctx context.Context, settings forge.SiteSettings, repoName, workflowName, event string, steps []forge.WorkflowStep) ([]byte, error) {
-	endpoint := strings.TrimRight(strings.TrimSpace(settings.RunnerURL), "/") + "/v1/execute"
-	if parsed, err := url.Parse(endpoint); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, errors.New("runner URL is invalid")
+func (s *Server) runnerForRepository(ctx context.Context, repoName string) (forge.Runner, error) {
+	scope, _, ok := strings.Cut(repoName, "/")
+	if !ok {
+		return forge.Runner{}, repository.ErrNotFound
 	}
-	repo, err := s.repos.GetFullName(repoName)
+	owner, err := s.forge.UserByUsername(ctx, scope)
 	if err != nil {
-		return nil, err
+		// Organization runners will be added with organization membership support.
+		return forge.Runner{}, nil
 	}
-	archive, err := exec.CommandContext(ctx, "git", "-C", repo.Path, "archive", "--format=tar", "HEAD").Output()
-	if err != nil {
-		return nil, fmt.Errorf("create workflow workspace: %w", err)
+	runners, err := s.forge.Runners(ctx, owner.ID)
+	if err != nil || len(runners) == 0 {
+		return forge.Runner{}, err
 	}
-	body, err := json.Marshal(runnerExecuteRequest{Event: event, Repository: repoName, Workflow: workflowName, Workspace: archive, Steps: steps})
-	if err != nil {
-		return nil, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(settings.RunnerToken); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	response, err := (&http.Client{Timeout: 30 * time.Minute}).Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("runner request failed: %w", err)
-	}
-	defer response.Body.Close()
-	var result runnerExecuteResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("invalid runner response: %w", err)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || result.Status == "failure" {
-		return []byte(result.Output), fmt.Errorf("runner execution failed")
-	}
-	return []byte(result.Output), nil
+	return runners[0], nil
 }
 
 func (s *Server) loadWorkflows(ctx context.Context, repoName string) ([]repository.Workflow, error) {
