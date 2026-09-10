@@ -4789,6 +4789,7 @@ function WorkList<T extends { id: number }>({
       title?: string
       author?: string
       state?: string
+      body?: string
       labels?: Label[]
       assignees?: string[]
     }
