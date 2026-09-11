@@ -9,8 +9,10 @@ RUN corepack enable && yarn install --non-interactive
 COPY web/ ./
 RUN yarn build
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$TARGETPLATFORM golang:1.26-alpine AS builder
 WORKDIR /src
+
+RUN apk add --no-cache gcc musl-dev
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -22,7 +24,7 @@ COPY --from=frontend /src/web/dist ./internal/web/dist
 
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+RUN CGO_ENABLED=1 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/kohame ./cmd/kohame
 
 FROM alpine:3.22
